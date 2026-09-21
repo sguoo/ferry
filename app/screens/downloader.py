@@ -7,11 +7,12 @@ from pathlib import Path
 
 import shiboken6
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QGridLayout, QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QSizePolicy, QWidget
 
-from .. import context, local, workers, youtube
+from .. import context, fonts, local, workers, youtube
 from ..icons import icon
 from ..jobs import STATUS_LABEL, Job
+from ..settings import AUDIO_PRESET, PRESETS, default_preset
 from ..subtitles import SUBTITLE_EXTS
 from ..theme import C
 from ..widgets.primitives import (
@@ -45,6 +46,19 @@ from . import Screen
 YOUTUBE_URL = re.compile(r"(https?://)?(www\.|m\.|music\.)?(youtube\.com|youtu\.be)/\S+", re.IGNORECASE)
 KINDS = [("전체", "all"), ("영상", "video"), ("재생목록", "playlist"), ("채널", "channel")]
 SORTS = ["관련도순", "조회수순", "길이순"]
+PLAYLIST_HINT = re.compile(r"[?&]list=|/playlist|/@[^/]+|/channel/|/c/|/user/", re.IGNORECASE)
+
+
+def is_playlist_url(url: str) -> bool:
+    return bool(PLAYLIST_HINT.search(url))
+
+
+def single_video_url(url: str) -> str | None:
+    """`watch?v=X&list=...&index=n` -> the bare video link, else None."""
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url)
+    if not m or "list=" not in url:
+        return None
+    return f"https://www.youtube.com/watch?v={m.group(1)}"
 
 
 def alive(w) -> bool:
@@ -315,6 +329,7 @@ class DownloaderScreen(Screen):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.info: VideoInfo | None = None
+        self.playlist = None
         self.results: list[SearchItem] = []
         self.output_dir: Path = context.settings.save_dir
         self._request = 0
@@ -456,6 +471,9 @@ class DownloaderScreen(Screen):
             set_prop(self.field, "state", "error")
             self._set_result(banner)
             return
+        if is_playlist_url(url):
+            self._fetch_playlist(url)
+            return
         self._request += 1
         req = self._request
         set_prop(self.field, "state", "")
@@ -467,11 +485,107 @@ class DownloaderScreen(Screen):
             failed=lambda err, r=req, u=url: r == self._request and self._show_error(err, lambda: self._fetch(u)),
         )
 
-    def _show_error(self, err: YoutubeError, retry) -> None:
+    def _show_error(self, err: YoutubeError, retry, title: str = "영상 정보를 가져오지 못했습니다") -> None:
         set_prop(self.field, "state", "error")
-        banner = ErrorBanner("영상 정보를 가져오지 못했습니다", err.message)
+        banner = ErrorBanner(title, err.message)
         banner.findChild(Button).clicked.connect(retry)
         self._set_result(banner)
+
+    # ------------------------------------------------------- playlist links
+    def _fetch_playlist(self, url: str) -> None:
+        self._request += 1
+        req = self._request
+        set_prop(self.field, "state", "")
+        self._set_result(self._build_loading())
+        workers.call(
+            youtube.fetch_playlist, url, context.settings.download_options(),
+            finished=lambda pl, r=req, u=url: r == self._request and self._show_playlist(pl, u),
+            failed=lambda err, r=req, u=url: r == self._request and self._show_error(err, lambda: self._fetch_playlist(u), "재생목록을 열 수 없습니다"),
+        )
+
+    def _show_playlist(self, pl, url: str) -> None:
+        """A playlist/channel link: download everything from here, or pick items on the playlist screen."""
+        self.info = None
+        self.playlist = pl
+        panel = Panel(gap=16)
+        top = hbox(gap=20)
+        cover = Thumbnail(pl.id or pl.url, 240, f"{pl.count}개")
+        cover.fetch(pl.thumbnail_url, pl.id or pl.url)
+        top.addWidget(cover, 0, Qt.AlignmentFlag.AlignTop)
+        ident = vbox(gap=8)
+        badges = hbox(gap=8)
+        badges.addWidget(Badge("재생목록 감지", "accent", mono=True))
+        badges.addWidget(label(pl.channel or pl.id, "muted", mono=True, elide=True), 1)
+        ident.addLayout(badges)
+        ident.addWidget(label(pl.title, "headline", wrap=True))
+        stats = hbox(gap=14)
+        stats.addWidget(icon_text("library", f"총 {pl.count}개 영상", "secondary"))
+        stats.addWidget(icon_text("clock", f"총 재생시간 {youtube.fmt_duration_long(pl.total_duration)}", "secondary"))
+        stats.addStretch()
+        ident.addLayout(stats)
+        ident.addStretch()
+        preview = ", ".join(e.title for e in pl.entries[:3])
+        if pl.count > 3:
+            preview += f" 외 {pl.count - 3}개"
+        ident.addWidget(label(preview, "muted", elide=True))
+        top.addLayout(ident, 1)
+        panel.body.addLayout(top)
+        panel.body.addWidget(Divider())
+
+        opts_row = hbox(gap=12)
+        opts_row.addWidget(IconLabel("sliders", C.TEXT2, 16))
+        opts_row.addWidget(label("전체 항목 출력", "secondary"))
+        self.pl_preset = QComboBox()
+        self.pl_preset.addItems([p[0] for p in PRESETS])
+        self.pl_preset.setCurrentIndex(AUDIO_PRESET if self.output_mode_index() == 1 else default_preset(context.settings.quality))
+        self.pl_preset.setFont(fonts.sans(13, 500))
+        self.pl_preset.setMinimumWidth(220)
+        opts_row.addWidget(self.pl_preset)
+        opts_row.addSpacing(8)
+        opts_row.addWidget(IconLabel("folder-open", C.TEXT2, 16))
+        safe = "".join(ch for ch in pl.title if ch not in '\\/:*?"<>|').strip() or "playlist"
+        self.pl_dir = self.output_dir / safe
+        self.pl_dir_badge = Badge(str(self.pl_dir), "neutral", mono=True, max_px=360)
+        opts_row.addWidget(self.pl_dir_badge)
+        change = Button("변경", "ghost", size="sm")
+        change.clicked.connect(self._pick_playlist_dir)
+        opts_row.addWidget(change)
+        opts_row.addStretch()
+        panel.body.addLayout(opts_row)
+
+        cta = hbox(gap=10)
+        all_btn = Button(f"재생목록 전체 다운로드 ({pl.count}개)", "primary", "arrow-down-circle", "lg")
+        all_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        all_btn.clicked.connect(self._enqueue_playlist)
+        cta.addWidget(all_btn, 1)
+        pick = Button("항목 골라서 받기", "secondary", "playlist", "lg")
+        pick.clicked.connect(lambda: self.open_playlist.emit(url))
+        cta.addWidget(pick)
+        single = single_video_url(url)
+        if single:
+            only = Button("이 영상만", "secondary", "film", "lg")
+            only.clicked.connect(lambda: self.load_url(single))
+            cta.addWidget(only)
+        panel.body.addLayout(cta)
+        self._set_result(panel)
+
+    def _pick_playlist_dir(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", str(self.pl_dir.parent))
+        if chosen:
+            self.pl_dir = Path(chosen)
+            self.pl_dir_badge.setText(str(self.pl_dir))
+
+    def _enqueue_playlist(self) -> None:
+        pl = self.playlist
+        if not pl or not pl.entries:
+            return
+        _, mode, height = PRESETS[self.pl_preset.currentIndex()]
+        opts = context.settings.download_options(mode=mode, quality=height, output_dir=self.pl_dir)
+        spec = f"{opts.container.upper()} · {height}p" if (mode == "video" and height) else ("MP3 · 320k" if mode == "audio" else f"{opts.container.upper()} · best")
+        for e in reversed(pl.entries):  # jobs list shows newest first; keep playlist order on screen
+            job = Job(e.url, e.title, opts, spec, fmt_duration(e.duration), e.thumbnail_url, e.id or e.url)
+            context.jobs.add(job)
+        self._set_result(EmptyState("check-circle", f"{pl.count}개 항목을 대기열에 넣었습니다", f"아래 '진행 중인 작업'에서 진행 상황을 볼 수 있습니다. 동시에 {context.jobs.max_parallel}개씩 내려받고, 저장 위치는 {self.pl_dir} 입니다."))
 
     def _show_idle(self) -> None:
         self._set_result(

@@ -112,7 +112,7 @@ class SubtitleViewer(QWidget):
         self.search.edit.blockSignals(False)
         clear_layout(self.lang_box)
         if len(self.files) > 1:
-            seg = Segmented([subtitles.lang_label(f) for f in self.files], 0)
+            seg = Segmented([subtitles.lang_label(f) + (" · 원본" if subtitles.is_styled(f) else "") for f in self.files], 0)
             seg.changed.connect(lambda i: self._load(self.files[i]))
             self.lang_box.addWidget(seg)
         self.hint.setText("큐를 클릭하면 플레이어가 그 시점으로 이동합니다." if self.media else "자막 파일만 있는 항목입니다. 영상과 같은 폴더에 두면 재생 중 표시됩니다.")
@@ -138,6 +138,8 @@ class SubtitleViewer(QWidget):
     # ------------------------------------------------------------- internal
     def _load(self, path: Path) -> None:
         self.cues = subtitles.load(path)
+        if subtitles.is_styled(path):
+            self.cues = subtitles.merge_runs(self.cues)  # collapse 33 ms colour-fade frames into lines
         self.title.setText(f"{path.name}")
         self.count_badge.setText(f"{len(self.cues)} CUES")
         self._render()

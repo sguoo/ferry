@@ -155,7 +155,7 @@ class MainWindow(QWidget):
         if p.suffix.lower() in subtitles.SUBTITLE_EXTS:
             self.subs.open([p], subtitles.media_for(p, MEDIA_EXTS))
         else:
-            self.subs.open(subtitles.sidecars(p), p)
+            self.subs.open(subtitles.pick_per_language(subtitles.sidecars(p)), p)
 
     def _seek_to(self, media: str, ms: int) -> None:
         self.subs.close()

@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QRect, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QPainter, QTextDocument, QTextOption
 from PySide6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
-from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import QComboBox, QFrame, QGridLayout, QLabel, QSlider, QStackedWidget, QWidget
+from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
+from PySide6.QtWidgets import QComboBox, QFrame, QGraphicsScene, QGraphicsView, QGridLayout, QSlider, QStackedWidget, QWidget
 
 from .. import context, fonts, subtitles
 from ..icons import icon
@@ -56,6 +57,81 @@ class SeekSlider(QSlider):
         return self._dragging
 
 
+class CaptionWidget(QWidget):
+    """One subtitle window: rich text with an outline pass, anchored like YouTube's srv3 windows."""
+
+    PAD = 8
+    EDGE_OFFSETS = ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, -1), (0, 1), (-1, 0), (1, 0))
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.doc = QTextDocument(self)
+        self.edge_doc = QTextDocument(self)
+        for d in (self.doc, self.edge_doc):
+            d.setDocumentMargin(0)
+        self.doc.setDefaultStyleSheet("body { color: #ffffff; }")  # plain cues: white like YouTube's default
+        self.cue: subtitles.Cue | None = None
+        self._edge_px = 0
+        self.hide()
+
+    def set_cue(self, cue: subtitles.Cue, elapsed_ms: int, base_px: int, max_width: int) -> None:
+        self.cue = cue
+        font = fonts.sans(base_px, 700 if cue.styled else 600)
+        opt = QTextOption()
+        opt.setAlignment({0: Qt.AlignmentFlag.AlignLeft, 1: Qt.AlignmentFlag.AlignRight}.get(cue.justify, Qt.AlignmentFlag.AlignHCenter))
+        opt.setWrapMode(QTextOption.WrapMode.WordWrap)
+        for d in (self.doc, self.edge_doc):
+            d.setDefaultFont(font)
+            d.setDefaultTextOption(opt)
+            d.setTextWidth(-1)
+        self.doc.setHtml(cue.html(elapsed_ms, base_px=base_px))
+        if cue.has_edge:
+            self.edge_doc.setHtml(cue.html(elapsed_ms, edge=True, base_px=base_px))
+        if self.doc.idealWidth() > max_width:
+            self.doc.setTextWidth(max_width)
+            self.edge_doc.setTextWidth(max_width)
+        self._edge_px = max(1, round(base_px / 14))
+        size = self.doc.size()
+        self.resize(int(size.width()) + 2 * self.PAD, int(size.height()) + 2 * self.PAD)
+        self.update()
+
+    def place(self, video: QRect) -> None:
+        """Anchor point ap (0..8 = TL..BR) at (ah%, av%) of the picture; plain cues sit bottom-centre."""
+        cue = self.cue
+        x = video.x() + video.width() * cue.ah / 100
+        y = video.y() + video.height() * cue.av / 100
+        w, h = self.width(), self.height()
+        col, row = cue.anchor % 3, cue.anchor // 3
+        x -= (0, w / 2, w)[col]
+        y -= (0, h / 2, h)[row]
+        if not cue.styled:
+            y = min(y, video.bottom() - 28 - h)
+        x = max(video.x(), min(x, video.right() - w))
+        y = max(video.y(), min(y, video.bottom() - h))
+        self.move(int(x), int(y))
+
+    def paintEvent(self, _):
+        if self.cue is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        if not self.cue.styled:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(11, 11, 15, 184))
+            p.drawRoundedRect(self.rect(), 8, 8)
+        p.translate(self.PAD, self.PAD)
+        if self.cue.styled and self.cue.has_edge:
+            for dx, dy in self.EDGE_OFFSETS:
+                p.save()
+                p.translate(dx * self._edge_px, dy * self._edge_px)
+                self.edge_doc.drawContents(p)
+                p.restore()
+        self.doc.drawContents(p)
+        p.end()
+
+
 class PlayerOverlay(QWidget):
     """Covers its parent; hidden until `play()` is called."""
 
@@ -86,9 +162,20 @@ class PlayerOverlay(QWidget):
         self.audio = QAudioOutput(self)
         self.audio.setVolume(0.8)
         self.player.setAudioOutput(self.audio)
-        self.video = QVideoWidget()
-        self.video.setStyleSheet("background: #000000;")
-        self.player.setVideoOutput(self.video)
+        # QVideoWidget is a native window that would sit above any overlay, so the
+        # frames go through a QGraphicsVideoItem inside a plain QGraphicsView instead
+        self.scene = QGraphicsScene(self)
+        self.video_item = QGraphicsVideoItem()
+        self.video_item.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.scene.addItem(self.video_item)
+        self.video = QGraphicsView(self.scene)
+        self.video.setFrameShape(QFrame.Shape.NoFrame)
+        self.video.setStyleSheet("background: #000000; border: none;")
+        self.video.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.video.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.video.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self.video.installEventFilter(self)
+        self.player.setVideoOutput(self.video_item)  # embedded subtitle tracks are drawn by the item itself
         self.player.positionChanged.connect(self._on_position)
         self.player.durationChanged.connect(self._on_duration)
         self.player.playbackStateChanged.connect(self._on_state)
@@ -116,27 +203,21 @@ class PlayerOverlay(QWidget):
 
         # ---- stage: video (+ subtitle overlay) or an audio card
         self.stage = QStackedWidget()
-        video_host = QWidget()
-        vg = QGridLayout(video_host)
+        self.video_host = QWidget()
+        vg = QGridLayout(self.video_host)
         vg.setContentsMargins(0, 0, 0, 0)
         vg.addWidget(self.video, 0, 0)
-        self.sub_label = QLabel()
-        self.sub_label.setWordWrap(True)
-        self.sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.sub_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.sub_label.setStyleSheet(
-            "QLabel { color: #ffffff; background: rgba(11, 11, 15, 0.72); border-radius: 8px; padding: 6px 14px; }"
-        )
-        self.sub_label.setFont(fonts.sans(22, 600))
-        self.sub_label.hide()
-        sub_wrap = QWidget()
-        sub_wrap.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        sl = vbox(sub_wrap, gap=0, margins=(48, 0, 48, 40))
-        sl.addStretch()
-        sl.addWidget(self.sub_label, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
-        vg.addWidget(sub_wrap, 0, 0)
-        sub_wrap.raise_()
-        self.stage.addWidget(video_host)
+        # captions are free-floating children of the host (one per visible subtitle window),
+        # positioned by _update_subtitle so styled srv3 files keep their on-screen placement
+        self.captions: list[CaptionWidget] = []
+        self.cue_index: subtitles.CueIndex | None = None
+        self._caption_key: tuple = ()
+        self._active_track = -1
+        self.caption_timer = QTimer(self)
+        self.caption_timer.setInterval(33)
+        self.caption_timer.timeout.connect(lambda: self._update_subtitle())
+        self.video_host.installEventFilter(self)
+        self.stage.addWidget(self.video_host)
         audio_card = QWidget()
         al = vbox(audio_card, gap=14)
         al.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -295,23 +376,25 @@ class PlayerOverlay(QWidget):
 
     # ------------------------------------------------------------ subtitles
     def _setup_subtitles(self, media: Path | None) -> None:
-        """Offer sidecar .srt/.vtt files (rendered by us) and embedded tracks (rendered by Qt)."""
-        self.cues = []
-        self.sub_label.hide()
-        self.sidecars = subtitles.sidecars(media) if media else []
+        """Offer one sidecar per language (styled .srv3 preferred over .srt) plus embedded tracks."""
+        self._clear_cues()
+        self.sidecars = subtitles.pick_per_language(subtitles.sidecars(media)) if media else []
         self.sub_combo.blockSignals(True)
         self.sub_combo.clear()
         self.sub_combo.addItem("자막 끄기", None)
         for f in self.sidecars:
-            self.sub_combo.addItem(subtitles.lang_label(f), str(f))
+            name = subtitles.lang_label(f) + (" · 원본 스타일" if subtitles.is_styled(f) else "")
+            self.sub_combo.addItem(name, str(f))
         self.sub_combo.blockSignals(False)
         self.sub_combo.setVisible(bool(self.sidecars))
         self.subs_btn.setVisible(bool(self.sidecars))
-        self.sub_combo.setCurrentIndex(0)
+        self._active_track = -1
         if self.sidecars:
             wanted = [x.lower() for x in context.settings.subtitle_langs]
             pick = next((i for i, f in enumerate(self.sidecars) if subtitles.lang_of(f).split("-")[0].lower() in wanted), 0)
             self.sub_combo.setCurrentIndex(pick + 1)
+        else:
+            self.sub_combo.setCurrentIndex(0)
 
     def _on_tracks(self) -> None:
         """Embedded subtitle tracks become available once the media is loaded."""
@@ -329,38 +412,90 @@ class PlayerOverlay(QWidget):
         if tracks and not self.sidecars:
             self.sub_combo.setCurrentIndex(1)
 
+    def _set_track(self, index: int) -> None:
+        # only touch the decoder when the embedded track really changes (it re-syncs and stutters)
+        if index != self._active_track:
+            self._active_track = index
+            self.player.setActiveSubtitleTrack(index)
+
     def _on_sub_changed(self, idx: int) -> None:
         data = self.sub_combo.itemData(idx)
-        self.cues = []
-        self.sub_label.hide()
+        self._clear_cues()
         if data is None:
-            self.player.setActiveSubtitleTrack(-1)
+            self._set_track(-1)
         elif str(data).startswith("track:"):
-            self.player.setActiveSubtitleTrack(int(str(data)[6:]))
+            self._set_track(int(str(data)[6:]))
         else:
-            self.player.setActiveSubtitleTrack(-1)
+            self._set_track(-1)
             try:
                 self.cues = subtitles.load(Path(data))
             except OSError:
                 self.cues = []
+            self.cue_index = subtitles.CueIndex(self.cues)
             self._update_subtitle(self.player.position())
+            self._sync_caption_timer()
+
+    def _clear_cues(self) -> None:
+        self.cues = []
+        self.cue_index = None
+        for cap in self.captions:
+            cap.hide()
+        self.caption_timer.stop()
 
     def cycle_subtitles(self) -> None:
         if self.sub_combo.count() > 1:
             self.sub_combo.setCurrentIndex((self.sub_combo.currentIndex() + 1) % self.sub_combo.count())
 
-    def _update_subtitle(self, ms: int) -> None:
-        if not self.cues:
-            return
-        cue = subtitles.cue_at(self.cues, ms)
-        if cue is None:
-            self.sub_label.hide()
-            return
-        if self.sub_label.text() != cue.text:
-            self.sub_label.setText(cue.text)
-        if not self.sub_label.isVisible():
-            self.sub_label.show()
+    def _sync_caption_timer(self) -> None:
+        """Styled files change every ~33 ms; positionChanged alone is too coarse for them."""
+        playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        if self.cues and playing and self.stage.currentIndex() == 0:
+            self.caption_timer.start()
+        else:
+            self.caption_timer.stop()
 
+    def _fit_video(self) -> None:
+        size = self.video.viewport().size()
+        self.scene.setSceneRect(0, 0, size.width(), size.height())
+        self.video_item.setPos(0, 0)
+        self.video_item.setSize(size)
+        self._update_subtitle(self.player.position(), force=True)
+
+    def _video_rect(self) -> QRect:
+        """Where the picture actually is inside the (letterboxed) view."""
+        W, H = self.video_host.width(), self.video_host.height()
+        native = self.video_item.nativeSize()
+        if native.isEmpty() or W <= 0 or H <= 0:
+            return QRect(0, 0, W, H)
+        scale = min(W / native.width(), H / native.height())
+        w, h = int(native.width() * scale), int(native.height() * scale)
+        return QRect((W - w) // 2, (H - h) // 2, w, h)
+
+    def _update_subtitle(self, ms: int | None = None, force: bool = False) -> None:
+        if not self.cues or self.cue_index is None:
+            return
+        if ms is None:
+            ms = self.player.position()
+        if self.cues[0].styled:
+            active = self.cue_index.active(ms)
+        else:
+            one = subtitles.cue_at(self.cues, ms)
+            active = [one] if one else []
+        key = tuple((id(c), (ms - c.start) if any(s.offset for s in c.segments) else 0) for c in active)
+        if key == self._caption_key and not force:
+            return
+        self._caption_key = key
+        rect = self._video_rect()
+        base_px = max(16, int(rect.height() * 0.045))
+        while len(self.captions) < len(active):
+            self.captions.append(CaptionWidget(self.video_host))
+        for cap, cue in zip(self.captions, active):
+            cap.set_cue(cue, ms - cue.start, base_px, int(rect.width() * 0.9))
+            cap.place(rect)
+            cap.show()
+            cap.raise_()
+        for cap in self.captions[len(active):]:
+            cap.hide()
     def current_media(self) -> str | None:
         return self.queue[self.index] if 0 <= self.index < len(self.queue) else None
 
@@ -422,6 +557,7 @@ class PlayerOverlay(QWidget):
     def _on_state(self, state) -> None:
         playing = state == QMediaPlayer.PlaybackState.PlayingState
         self.play_btn.setIcon(icon("pause" if playing else "play", C.TEXT, 20))
+        self._sync_caption_timer()
 
     def _on_status(self, status) -> None:
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia) and self._pending_seek is not None:
@@ -477,6 +613,10 @@ class PlayerOverlay(QWidget):
     def eventFilter(self, obj, event):
         if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible():
             self.setGeometry(self.parentWidget().rect())
+        elif obj is self.video and event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            QTimer.singleShot(0, self._fit_video)  # after the viewport has taken its new size
+        elif obj is self.video_host and event.type() == QEvent.Type.Resize and self.cues:
+            QTimer.singleShot(0, lambda: self._update_subtitle(force=True))
         return super().eventFilter(obj, event)
 
 

@@ -96,7 +96,7 @@ class LibraryCard(QFrame):
         codec = " / ".join(c for c in (file.vcodec.upper(), file.acodec.upper()) if c)
         foot.addWidget(icon_text("waveform" if file.is_audio else "film", codec or "코덱 정보 없음", "caption", elide=True), 1)
         if file.subtitles:
-            langs = ", ".join(subtitles.lang_of(s) or "srt" for s in file.subtitles)
+            langs = ", ".join(dict.fromkeys(subtitles.lang_of(s) or s.suffix.lstrip(".") for s in file.subtitles))
             subs = Button(f"자막 {langs}", "secondary", "subtitles", "sm")
             subs.setToolTip("자막 보기 · 재생 중에도 표시됩니다")
             subs.clicked.connect(lambda: context.bus.view_subtitles.emit(str(file.path)))

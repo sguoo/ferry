@@ -50,12 +50,15 @@ class YoutubeError(Exception):
 
 
 _ERROR_HINTS = [
+    (r"confirm you.re not a bot", "YouTube가 봇 확인을 요구합니다(요청이 많았음). 잠시 후 다시 시도하거나 환경설정에서 브라우저 쿠키를 연결하세요."),
     (r"Sign in to confirm your age|age.restricted", "연령 제한 영상입니다. 환경설정에서 브라우저 쿠키를 연결하면 받을 수 있습니다."),
     (r"Private video", "비공개 영상입니다."),
     (r"Video unavailable|This video is (not available|unavailable)", "존재하지 않거나 이 지역에서 볼 수 없는 영상입니다."),
     (r"HTTP Error 403", "HTTP 403 · YouTube가 요청을 거부했습니다. 잠시 후 다시 시도하거나 쿠키를 연결하세요."),
     (r"HTTP Error 429", "요청이 너무 많습니다(429). 잠시 후 다시 시도하세요."),
     (r"is not a valid URL|Unsupported URL", "지원하지 않는 주소입니다."),
+    (r"playlist type is unviewable|Mixes are not|RD[A-Za-z0-9_-]{11}", "믹스(자동 생성 재생목록)는 열 수 없습니다. 일반 재생목록이나 채널 주소를 사용하세요."),
+    (r"does not have a videos tab|This channel does not have", "이 채널에는 동영상 탭이 없습니다. 채널 주소에서 /videos를 빼고 다시 시도하세요."),
     (r"Requested format is not available", "이 영상은 합본(영상+음성) 스트림을 제공하지 않아 바로 재생할 수 없습니다. 다운로드 후 재생해 주세요."),
     (r"ffmpeg|ffprobe", "ffmpeg를 찾을 수 없습니다. 환경설정에서 경로를 지정하세요."),
     (r"getaddrinfo failed|Network is unreachable|Temporary failure in name resolution", "네트워크에 연결할 수 없습니다."),
@@ -314,7 +317,8 @@ def _download_opts(opts: DownloadOptions, on_progress: ProgressCallback | None, 
         o.update({"writesubtitles": True, "writeautomaticsub": True, "subtitleslangs": opts.subtitle_langs, "subtitlesformat": "srt/best"})
         o["postprocessors"].append({"key": "FFmpegSubtitlesConvertor", "format": "srt"})
         if opts.embed_subtitles and opts.mode == "video":
-            o["postprocessors"].append({"key": "FFmpegEmbedSubtitle"})
+            # keep the .srt next to the video so the in-app player can render it itself
+            o["postprocessors"].append({"key": "FFmpegEmbedSubtitle", "already_have_subtitle": True})
 
     def hook(d: dict) -> None:
         if cancel is not None and cancel.is_set():
@@ -476,9 +480,39 @@ def download(
             on_progress(Progress("error", note=str(exc)))
         raise _friendly(exc) from exc
     path = _final_path(ydl, info, opts)
+    if opts.subtitle_langs and opts.mode != "audio":
+        _fetch_styled_subtitles(url, opts)
     if on_progress:
         on_progress(Progress("finished", 100.0, filename=str(path)))
     return path
+
+
+def _fetch_styled_subtitles(url: str, opts: DownloadOptions) -> None:
+    """Second, download-free pass that saves YouTube's own srv3 captions next to the .srt.
+
+    srv3 keeps colours, outlines, sizes and screen positions (the .srt loses them); the
+    in-app player prefers it when present. Silently skipped for sites without it.
+    """
+    if "youtu" not in url:
+        return
+    o = _base_opts(opts)
+    o.update(
+        {
+            "skip_download": True,
+            "noplaylist": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": list(opts.subtitle_langs),
+            "subtitlesformat": "srv3",
+            "outtmpl": str(Path(opts.output_dir) / opts.filename_template),
+            "ignoreerrors": True,
+        }
+    )
+    try:
+        with yt_dlp.YoutubeDL(o) as ydl:
+            ydl.extract_info(url, download=True)
+    except Exception:
+        pass  # best effort: the plain .srt from the main pass is already there
 
 
 def fetch_thumbnail(url: str | None, key: str, dest_dir: Path = THUMBNAIL_CACHE_DIR, timeout: float = 10) -> Path | None:

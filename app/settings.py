@@ -23,6 +23,24 @@ THREAD_CHOICES = [1, 2, 4, 6, 8]
 COOKIE_BROWSERS: list[tuple[str, str]] = [("사용 안 함", ""), ("Chrome", "chrome"), ("Edge", "edge"), ("Firefox", "firefox"), ("Brave", "brave")]
 LANGUAGES = ["한국어", "English", "日本語"]
 
+# per-item output presets for batch downloads: (label, mode, max height)
+PRESETS: list[tuple[str, str, int | None]] = [
+    ("최고 화질 (MP4)", "video", None),
+    ("2160p (4K)", "video", 2160),
+    ("1440p (QHD)", "video", 1440),
+    ("1080p (FHD)", "video", 1080),
+    ("720p (HD)", "video", 720),
+    ("MP3 음원 320k", "audio", None),
+]
+AUDIO_PRESET = len(PRESETS) - 1
+
+
+def default_preset(quality: int | None) -> int:
+    for i, (_, mode, h) in enumerate(PRESETS):
+        if mode == "video" and h == quality:
+            return i
+    return 0
+
 
 @dataclass
 class Settings:

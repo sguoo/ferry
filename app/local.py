@@ -25,7 +25,7 @@ VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts"}
 AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".opus", ".wav", ".ogg", ".aac"}
 MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
 PLAYLIST_EXTS = {".m3u", ".m3u8"}
-SUBTITLE_EXTS = {".srt", ".vtt"}
+SUBTITLE_EXTS = {".srt", ".vtt", ".srv3"}
 
 
 @dataclass

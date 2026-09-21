@@ -11,6 +11,7 @@ from .. import context, fonts, local, workers, youtube
 from ..icons import icon
 from ..jobs import STATUS_LABEL, Job
 from ..local import LocalFile, LocalPlaylist
+from ..settings import AUDIO_PRESET, PRESETS, default_preset
 from ..theme import C, S
 from ..widgets.primitives import (
     Badge,
@@ -44,17 +45,6 @@ from .downloader import YOUTUBE_URL, alive
 # column widths for the item table (px); title column is the elastic one
 COL_CHECK, COL_INDEX, COL_THUMB, COL_CHANNEL, COL_DUR, COL_FMT, COL_STATUS = 26, 32, 96, 130, 48, 176, 96
 
-# per-row output presets: (label, mode, max height)
-PRESETS: list[tuple[str, str, int | None]] = [
-    ("최고 화질 (MP4)", "video", None),
-    ("2160p (4K)", "video", 2160),
-    ("1440p (QHD)", "video", 1440),
-    ("1080p (FHD)", "video", 1080),
-    ("720p (HD)", "video", 720),
-    ("MP3 음원 320k", "audio", None),
-]
-AUDIO_PRESET = len(PRESETS) - 1
-
 
 def combo(items: list[str], current: int = 0) -> QComboBox:
     c = QComboBox()
@@ -66,11 +56,7 @@ def combo(items: list[str], current: int = 0) -> QComboBox:
 
 
 def _default_preset() -> int:
-    q = context.settings.quality
-    for i, (_, mode, h) in enumerate(PRESETS):
-        if mode == "video" and h == q:
-            return i
-    return 0
+    return default_preset(context.settings.quality)
 
 
 # --------------------------------------------------------------------------- #
