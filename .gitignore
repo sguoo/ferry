@@ -1,0 +1,10 @@
+﻿__pycache__/
+.venv/
+cache/
+downloads/
+settings.json
+.claude/
+reference/
+.python-version
+uv.lock
+pyproject.toml
