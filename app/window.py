@@ -7,7 +7,7 @@ import ctypes
 import sys
 from ctypes import wintypes
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QScrollArea, QStackedWidget, QSystemTrayIcon, QWidget
 
 from pathlib import Path
@@ -78,6 +78,8 @@ class MainWindow(QWidget):
         root.addLayout(body, 1)
 
         self.screens["downloader"].open_playlist.connect(self.open_playlist)
+        self.screens["downloader"].open_settings.connect(self.open_cookie_settings)
+        self.screens["playlist"].open_settings.connect(self.open_cookie_settings)
 
         # in-app player covers the page area; fullscreen hides the chrome around it
         self.player = PlayerOverlay(self.pages)
@@ -124,6 +126,17 @@ class MainWindow(QWidget):
         self.pages.setCurrentWidget(self._scrollers[key])
         self._scrollers[key].verticalScrollBar().setValue(0)
         reveal(self.screens[key].sections())
+
+    def open_cookie_settings(self) -> None:
+        """Jump straight to the YouTube-account section (bot check / age gate banners)."""
+        self.sidebar.select("settings")
+        screen = self.screens["settings"]
+
+        def scroll():
+            self._scrollers["settings"].ensureWidgetVisible(screen.cookie_section, 0, 40)
+            screen.cookie_file.edit.setFocus()
+
+        QTimer.singleShot(350, scroll)  # after the reveal animation has laid things out
 
     def open_playlist(self, url: str) -> None:
         self.sidebar.select("playlist")

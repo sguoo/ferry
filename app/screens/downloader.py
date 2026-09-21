@@ -65,6 +65,11 @@ def alive(w) -> bool:
     return shiboken6.isValid(w)
 
 
+def needs_login(err: YoutubeError) -> bool:
+    """Errors that cookies (a signed-in YouTube session) fix."""
+    return any(k in err.message for k in ("봇 확인", "연령 제한", "로그인")) or "cookies" in err.detail.lower()
+
+
 # --------------------------------------------------------------------------- #
 # pieces
 # --------------------------------------------------------------------------- #
@@ -325,6 +330,7 @@ class SearchResultRow(QWidget):
 
 class DownloaderScreen(Screen):
     open_playlist = Signal(str)  # a playlist/channel URL that belongs on the playlist screen
+    open_settings = Signal()     # user asked to connect cookies from an error banner
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -389,7 +395,8 @@ class DownloaderScreen(Screen):
         self._apply_mode("link")
         self._show_idle()
         self._refresh_env()
-        context.bus.settings_changed.connect(self._refresh_env)
+        context.bus.settings_changed.connect(self._on_settings_saved)
+        self._retry_after_settings = None
 
     # ------------------------------------------------------------- helpers
     def _refresh_env(self) -> None:
@@ -487,9 +494,23 @@ class DownloaderScreen(Screen):
 
     def _show_error(self, err: YoutubeError, retry, title: str = "영상 정보를 가져오지 못했습니다") -> None:
         set_prop(self.field, "state", "error")
-        banner = ErrorBanner(title, err.message)
-        banner.findChild(Button).clicked.connect(retry)
+        if needs_login(err):
+            # bot check / age gate: send the user to the cookie settings and retry once they save
+            banner = ErrorBanner(title, err.message, action="쿠키 연결하러 가기")
+            banner.findChild(Button).clicked.connect(self.open_settings.emit)
+            self._retry_after_settings = retry
+        else:
+            banner = ErrorBanner(title, err.message)
+            banner.findChild(Button).clicked.connect(retry)
+            self._retry_after_settings = None
         self._set_result(banner)
+
+    def _on_settings_saved(self) -> None:
+        self._refresh_env()
+        retry = getattr(self, "_retry_after_settings", None)
+        if retry and (context.settings.cookies_file or context.settings.cookies_browser):
+            self._retry_after_settings = None
+            retry()
 
     # ------------------------------------------------------- playlist links
     def _fetch_playlist(self, url: str) -> None:
@@ -870,9 +891,7 @@ class DownloaderScreen(Screen):
         )
 
     def _show_search_error(self, err: YoutubeError, query: str) -> None:
-        banner = ErrorBanner("검색에 실패했습니다", err.message)
-        banner.findChild(Button).clicked.connect(lambda: self._search(query))
-        self._set_result(banner)
+        self._show_error(err, lambda: self._search(query), "검색에 실패했습니다")
 
     def _on_results(self, items: list[SearchItem]) -> None:
         self.results = items

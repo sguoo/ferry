@@ -7,8 +7,9 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QComboBox, QFileDialog, QLineEdit, QWidget
 
-from .. import context, fonts, youtube
+from .. import context, fonts, workers, youtube
 from ..settings import CONTAINERS, COOKIE_BROWSERS, LANGUAGES, QUALITY_CHOICES, THREAD_CHOICES, Settings
+from ..youtube import DownloadOptions
 from ..theme import C
 from ..widgets.primitives import (
     Button,
@@ -146,7 +147,7 @@ class SettingsScreen(Screen):
         self.add_section(Divider())
 
         # ---------------------------------------------------------- tools
-        sec = SettingsSection("외부 도구", "스트림 병합과 오디오 변환에 ffmpeg가 필요합니다. 연령 제한 영상은 브라우저 쿠키로 인증할 수 있습니다.")
+        sec = SettingsSection("외부 도구", "스트림 병합과 오디오 변환에 ffmpeg가 필요합니다. PATH에 있으면 자동으로 찾습니다.")
         self.ffmpeg = CompositeField("cpu", "비워두면 PATH에서 찾습니다", "", mono=True)
         fbrowse = Button("찾아보기", "secondary", size="sm")
         fbrowse.clicked.connect(self._pick_ffmpeg)
@@ -154,8 +155,41 @@ class SettingsScreen(Screen):
         self.ffmpeg_field = FormField("ffmpeg 경로", self.ffmpeg)
         self.ffmpeg.edit.editingFinished.connect(self._check_ffmpeg)
         sec.form.addWidget(self.ffmpeg_field)
+        self.add_section(sec)
+        self.add_section(Divider())
+
+        # ---------------------------------------------------------- youtube account
+        sec = SettingsSection(
+            "YouTube 계정 연동 (쿠키)",
+            "\"봇이 아님을 확인\" 오류, 연령 제한·회원 전용 영상은 로그인 세션이 있어야 받을 수 있습니다. "
+            "브라우저의 쿠키를 그대로 쓰거나, 로그인된 브라우저에서 내보낸 cookies.txt를 지정하세요.",
+        )
+        self.cookie_file = CompositeField("shield", "예: C:\\Users\\me\\Downloads\\youtube.com_cookies.txt", "", mono=True)
+        cbrowse = Button("찾아보기", "secondary", size="sm")
+        cbrowse.clicked.connect(self._pick_cookie_file)
+        self.cookie_file.add_trailing(cbrowse)
+        self.cookie_file_field = FormField(
+            "cookies.txt 파일 (권장)",
+            self.cookie_file,
+            "가장 확실한 방법입니다. Chrome/Edge 확장 'Get cookies.txt LOCALLY'로 youtube.com에 로그인한 상태에서 내보낸 Netscape 형식 파일을 고르세요. 지정하면 아래 브라우저 설정보다 우선합니다.",
+        )
+        sec.form.addWidget(self.cookie_file_field)
         self.cookies = _combo([b[0] for b in COOKIE_BROWSERS], 0)
-        sec.form.addWidget(FormField("브라우저 쿠키 사용", self.cookies, "선택한 브라우저의 로그인 세션을 읽어 연령 제한·회원 전용 영상을 내려받습니다. 브라우저가 실행 중이면 실패할 수 있습니다."))
+        self.cookies_field = FormField(
+            "브라우저에서 직접 읽기",
+            self.cookies,
+            "브라우저 프로필의 쿠키 DB를 직접 읽습니다. Firefox는 잘 되지만 최신 Chrome/Edge는 실행 중이거나 암호화 방식 때문에 실패하는 경우가 많습니다 — 그럴 땐 위의 cookies.txt를 쓰세요.",
+        )
+        sec.form.addWidget(self.cookies_field)
+        test_row = QWidget()
+        trow = hbox(test_row, gap=10)
+        self.cookie_test_btn = Button("연결 테스트", "secondary", "check")
+        self.cookie_test_btn.clicked.connect(self._test_cookies)
+        trow.addWidget(self.cookie_test_btn)
+        self.cookie_status = label("아직 테스트하지 않았습니다.", "muted", wrap=True)
+        trow.addWidget(self.cookie_status, 1)
+        sec.form.addWidget(test_row)
+        self.cookie_section = sec
         self.add_section(sec)
         self.add_section(Divider())
 
@@ -183,6 +217,7 @@ class SettingsScreen(Screen):
         self.sw_sound.toggle.setChecked(s.sound)
         self.ffmpeg.set_value(s.ffmpeg_path)
         self.cookies.setCurrentIndex(next((i for i, b in enumerate(COOKIE_BROWSERS) if b[1] == s.cookies_browser), 0))
+        self.cookie_file.set_value(s.cookies_file)
         self.language.setCurrentIndex(LANGUAGES.index(s.language) if s.language in LANGUAGES else 0)
         self._check_ffmpeg()
 
@@ -219,6 +254,12 @@ class SettingsScreen(Screen):
         s.sound = self.sw_sound.toggle.isChecked()
         s.ffmpeg_path = self.ffmpeg.edit.text().strip()
         s.cookies_browser = COOKIE_BROWSERS[self.cookies.currentIndex()][1]
+        cookie_path = self.cookie_file.edit.text().strip()
+        if cookie_path and not Path(cookie_path).is_file():
+            self.cookie_file_field.set_error("cookies.txt 파일을 찾을 수 없습니다.")
+            return None
+        self.cookie_file_field.set_error(None)
+        s.cookies_file = cookie_path
         s.language = LANGUAGES[self.language.currentIndex()]
         return s
 
@@ -242,6 +283,33 @@ class SettingsScreen(Screen):
         chosen = QFileDialog.getExistingDirectory(self, "폴더 선택", field.edit.text() or str(Path.home()))
         if chosen:
             field.set_value(chosen)
+
+    def _pick_cookie_file(self) -> None:
+        chosen, _ = QFileDialog.getOpenFileName(self, "cookies.txt 선택", self.cookie_file.edit.text() or str(Path.home() / "Downloads"), "쿠키 파일 (*.txt);;모든 파일 (*)")
+        if chosen:
+            self.cookie_file.set_value(chosen)
+            self.cookie_file_field.set_error(None)
+
+    def _test_cookies(self) -> None:
+        """Try the currently *entered* cookie source (not yet saved) against YouTube."""
+        opts = DownloadOptions(
+            cookies_file=self.cookie_file.edit.text().strip() or None,
+            cookies_from_browser=COOKIE_BROWSERS[self.cookies.currentIndex()][1] or None,
+        )
+        self.cookie_test_btn.setEnabled(False)
+        self.cookie_status.setText("확인 중... (브라우저 쿠키는 몇 초 걸릴 수 있습니다)")
+        self.cookie_status.setStyleSheet(f"color: {C.TEXT2}; background: transparent;")
+        workers.call(youtube.test_cookies, opts, finished=self._cookie_ok, failed=self._cookie_failed)
+
+    def _cookie_ok(self, summary: str) -> None:
+        self.cookie_test_btn.setEnabled(True)
+        self.cookie_status.setText(f"연결됨 · {summary} · 저장 버튼을 눌러 적용하세요.")
+        self.cookie_status.setStyleSheet(f"color: {C.SUCCESS}; background: transparent;")
+
+    def _cookie_failed(self, err) -> None:
+        self.cookie_test_btn.setEnabled(True)
+        self.cookie_status.setText(f"실패 · {err.message}")
+        self.cookie_status.setStyleSheet(f"color: {C.ACCENT}; background: transparent;")
 
     def _pick_ffmpeg(self) -> None:
         chosen, _ = QFileDialog.getOpenFileName(self, "ffmpeg 실행 파일", self.ffmpeg.edit.text() or "C:\\", "ffmpeg (ffmpeg.exe ffmpeg);;모든 파일 (*)")

@@ -50,7 +50,10 @@ class YoutubeError(Exception):
 
 
 _ERROR_HINTS = [
-    (r"confirm you.re not a bot", "YouTube가 봇 확인을 요구합니다(요청이 많았음). 잠시 후 다시 시도하거나 환경설정에서 브라우저 쿠키를 연결하세요."),
+    (r"confirm you.re not a bot", "YouTube가 봇 확인을 요구합니다. 환경설정 › 외부 도구에서 YouTube 쿠키를 연결하면 해결됩니다 (잠시 후 재시도해도 풀리기도 함)."),
+    (r"Could not copy Chrome cookie database|Failed to decrypt with DPAPI|app.bound", "브라우저 쿠키를 읽지 못했습니다. Chrome/Edge는 실행 중이거나 최신 버전이면 직접 읽기가 막힙니다 — 브라우저를 완전히 닫고 다시 시도하거나, cookies.txt 파일을 지정하세요."),
+    (r"could not find .* cookies database", "선택한 브라우저의 쿠키 데이터베이스를 찾을 수 없습니다 (설치되어 있지 않거나 프로필이 없음)."),
+    (r"cookies? file .* not found|No such file or directory: .*cookies|Netscape format", "cookies.txt 파일을 열 수 없거나 형식이 맞지 않습니다 (Netscape 형식으로 내보내야 합니다)."),
     (r"Sign in to confirm your age|age.restricted", "연령 제한 영상입니다. 환경설정에서 브라우저 쿠키를 연결하면 받을 수 있습니다."),
     (r"Private video", "비공개 영상입니다."),
     (r"Video unavailable|This video is (not available|unavailable)", "존재하지 않거나 이 지역에서 볼 수 없는 영상입니다."),
@@ -178,6 +181,7 @@ class DownloadOptions:
     concurrent_fragments: int = 4
     ffmpeg_location: str | None = None
     cookies_from_browser: str | None = None  # "chrome", "edge", "firefox", "brave"
+    cookies_file: str | None = None          # Netscape cookies.txt; wins over cookies_from_browser
 
 
 Phase = Literal["queued", "downloading", "merging", "converting", "finished", "error"]
@@ -263,7 +267,9 @@ def _base_opts(opts: DownloadOptions | None = None) -> dict:
     if opts:
         if opts.ffmpeg_location:
             o["ffmpeg_location"] = opts.ffmpeg_location
-        if opts.cookies_from_browser:
+        if opts.cookies_file:
+            o["cookiefile"] = opts.cookies_file
+        elif opts.cookies_from_browser:
             o["cookiesfrombrowser"] = (opts.cookies_from_browser,)
     return o
 
@@ -485,6 +491,52 @@ def download(
     if on_progress:
         on_progress(Progress("finished", 100.0, filename=str(path)))
     return path
+
+
+class _Capture:
+    """Logger that keeps yt-dlp's lines so a cookie test can report what happened."""
+
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def debug(self, msg):
+        self.lines.append(str(msg))
+
+    def info(self, msg):
+        self.lines.append(str(msg))
+
+    def warning(self, msg):
+        self.lines.append(str(msg))
+
+    def error(self, msg):
+        self.lines.append(str(msg))
+
+
+def test_cookies(opts: DownloadOptions) -> str:
+    """Check that the configured cookie source loads and YouTube accepts it. Returns a summary; raises YoutubeError."""
+    if not (opts.cookies_file or opts.cookies_from_browser):
+        raise YoutubeError("쿠키 소스가 없습니다. 브라우저를 고르거나 cookies.txt 파일을 지정하세요.")
+    if opts.cookies_file and not Path(opts.cookies_file).is_file():
+        raise YoutubeError(f"cookies.txt 파일을 찾을 수 없습니다: {opts.cookies_file}")
+    o = _base_opts(opts)
+    log = _Capture()
+    o.update({"logger": log, "quiet": False, "verbose": False, "extract_flat": "in_playlist", "playlist_items": "1"})
+    try:
+        with yt_dlp.YoutubeDL(o) as ydl:
+            jar = ydl.cookiejar
+            count = sum(1 for c in jar if "youtube.com" in (c.domain or "") or "google.com" in (c.domain or ""))
+            logged_in = any(c.name in ("SAPISID", "__Secure-3PAPISID", "LOGIN_INFO") for c in jar)
+            # the "library" feed is only served to a signed-in account
+            ydl.extract_info("https://www.youtube.com/feed/library", download=False)
+    except Exception as exc:
+        raw = str(exc)
+        if "login" in raw.lower() or "sign in" in raw.lower():
+            raise YoutubeError(f"쿠키는 읽었지만 로그인 세션이 아닙니다 (YouTube/Google 쿠키 {count}개). 브라우저에서 YouTube에 로그인한 뒤 다시 내보내세요.", raw) from exc
+        raise _friendly(exc) from exc
+    source = "cookies.txt" if opts.cookies_file else opts.cookies_from_browser
+    if not logged_in:
+        raise YoutubeError(f"{source}에서 쿠키 {count}개를 읽었지만 로그인 세션 쿠키(SAPISID/LOGIN_INFO)가 없습니다. 브라우저에서 YouTube에 로그인한 상태로 다시 내보내세요.")
+    return f"{source}에서 YouTube/Google 쿠키 {count}개 읽음 · 로그인 세션 확인됨"
 
 
 def _fetch_styled_subtitles(url: str, opts: DownloadOptions) -> None:

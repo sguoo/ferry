@@ -57,6 +57,7 @@ class Settings:
     info_cache: bool = True
     ffmpeg_path: str = ""
     cookies_browser: str = ""
+    cookies_file: str = ""            # Netscape cookies.txt exported from the browser
     language: str = "한국어"
     playlist_save_path: str = ""       # empty = save_path / <playlist title>
     subtitle_langs: list[str] = field(default_factory=lambda: ["ko"])
@@ -90,6 +91,7 @@ class Settings:
             concurrent_fragments=4,
             ffmpeg_location=self.ffmpeg_path or None,
             cookies_from_browser=self.cookies_browser or None,
+            cookies_file=self.cookies_file or None,
         )
 
 

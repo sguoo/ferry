@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QFileDialog, QFrame, QLineEdit, QWidget
 
 from .. import context, fonts, local, workers, youtube
@@ -38,9 +38,9 @@ from ..widgets.primitives import (
     set_prop,
     vbox,
 )
-from ..youtube import PlaylistEntry, PlaylistInfo, fmt_duration, fmt_duration_long, fmt_relative, fmt_size
+from ..youtube import PlaylistEntry, PlaylistInfo, YoutubeError, fmt_duration, fmt_duration_long, fmt_relative, fmt_size
 from . import Screen
-from .downloader import YOUTUBE_URL, alive
+from .downloader import YOUTUBE_URL, alive, needs_login
 
 # column widths for the item table (px); title column is the elastic one
 COL_CHECK, COL_INDEX, COL_THUMB, COL_CHANNEL, COL_DUR, COL_FMT, COL_STATUS = 26, 32, 96, 130, 48, 176, 96
@@ -243,8 +243,12 @@ class LocalRow(QWidget):
 
 
 class PlaylistScreen(Screen):
+    open_settings = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._retry_after_settings = None
+        context.bus.settings_changed.connect(self._on_settings_saved)
         self.playlist: PlaylistInfo | None = None
         self.local: LocalPlaylist | None = None
         self.rows: list[ItemRow] = []
@@ -338,7 +342,7 @@ class PlaylistScreen(Screen):
         workers.call(
             youtube.fetch_playlist, url, context.settings.download_options(),
             finished=lambda pl, r=req: r == self._request and self._on_playlist(pl),
-            failed=lambda err, r=req, u=url: r == self._request and self._show_error("재생목록을 열 수 없습니다", err.message, lambda: self.load_url(u)),
+            failed=lambda err, r=req, u=url: r == self._request and self._show_error("재생목록을 열 수 없습니다", err.message, lambda: self.load_url(u), err.detail),
         )
 
     def _on_playlist(self, pl: PlaylistInfo) -> None:
@@ -346,11 +350,23 @@ class PlaylistScreen(Screen):
         self.output_dir = None
         self._show_playlist()
 
-    def _show_error(self, title: str, message: str, retry) -> None:
+    def _show_error(self, title: str, message: str, retry, detail: str = "") -> None:
         set_prop(self.field, "state", "error")
-        banner = ErrorBanner(title, message)
-        banner.findChild(Button).clicked.connect(retry)
+        if needs_login(YoutubeError(message, detail)):
+            banner = ErrorBanner(title, message, action="쿠키 연결하러 가기")
+            banner.findChild(Button).clicked.connect(self.open_settings.emit)
+            self._retry_after_settings = retry
+        else:
+            banner = ErrorBanner(title, message)
+            banner.findChild(Button).clicked.connect(retry)
+            self._retry_after_settings = None
         self._set(banner)
+
+    def _on_settings_saved(self) -> None:
+        retry = getattr(self, "_retry_after_settings", None)
+        if retry and (context.settings.cookies_file or context.settings.cookies_browser):
+            self._retry_after_settings = None
+            retry()
 
     def _show_idle(self) -> None:
         self._set(EmptyState("playlist", "가져온 재생목록이 없습니다", "재생목록·채널 주소를 입력하면 항목을 표로 나열해 일괄 다운로드할 수 있고, 폴더 모드로 바꾸면 PC에 있는 미디어 파일로 .m3u8 재생목록을 만들 수 있습니다."))

@@ -17,8 +17,12 @@ from app import youtube
 from app.youtube import DownloadOptions, Progress, YoutubeError
 
 
+def _auth(args: argparse.Namespace) -> DownloadOptions:
+    return DownloadOptions(cookies_file=args.cookies, cookies_from_browser=args.browser)
+
+
 def cmd_info(args: argparse.Namespace) -> None:
-    info = youtube.fetch_info(args.url)
+    info = youtube.fetch_info(args.url, _auth(args))
     print(f"{info.title}")
     print(f"  채널: {info.channel}{' (인증)' if info.channel_verified else ''} · {youtube.fmt_subscribers(info.subscribers)}")
     print(f"  {youtube.fmt_views(info.views)} · {youtube.fmt_relative(info.upload_date)} · 길이 {youtube.fmt_duration(info.duration)}")
@@ -39,7 +43,7 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 
 def cmd_playlist(args: argparse.Namespace) -> None:
-    pl = youtube.fetch_playlist(args.url)
+    pl = youtube.fetch_playlist(args.url, _auth(args))
     print(f"{pl.title} — {pl.channel}")
     print(f"  총 {pl.count}개 · {youtube.fmt_duration_long(pl.total_duration)}")
     for e in pl.entries[: args.limit]:
@@ -57,6 +61,8 @@ def cmd_get(args: argparse.Namespace) -> None:
         subtitle_langs=args.sub or [],
         output_dir=Path(args.out) if args.out else youtube.DEFAULT_OUTPUT_DIR,
         rate_limit=args.limit_rate,
+        cookies_file=args.cookies,
+        cookies_from_browser=args.browser,
     )
     cancel = threading.Event()
     last_line = {"len": 0}
@@ -85,6 +91,8 @@ def cmd_get(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youtube_download", description="Ferry 백엔드 CLI")
+    parser.add_argument("--cookies", help="로그인된 브라우저에서 내보낸 cookies.txt (봇 확인·연령 제한 우회)")
+    parser.add_argument("--browser", choices=["chrome", "edge", "firefox", "brave"], help="브라우저 쿠키를 직접 읽기")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("info", help="영상 정보와 선택 가능한 화질")
