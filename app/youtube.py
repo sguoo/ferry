@@ -25,10 +25,10 @@ from typing import Callable, Literal
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled
 
-from .theme import ROOT
+from .theme import DATA_DIR
 
-DEFAULT_OUTPUT_DIR = ROOT / "downloads"
-THUMBNAIL_CACHE_DIR = ROOT / "cache" / "thumbs"  # downloaded YouTube thumbnails, keyed by video id
+DEFAULT_OUTPUT_DIR = DATA_DIR / "downloads"
+THUMBNAIL_CACHE_DIR = DATA_DIR / "cache" / "thumbs"  # downloaded YouTube thumbnails, keyed by video id
 
 Mode = Literal["video", "audio", "subtitles"]
 Container = Literal["mp4", "mkv", "webm"]
@@ -213,8 +213,9 @@ def ytdlp_version() -> str:
 
 
 def find_ffmpeg(explicit: str | None = None) -> Path | None:
+    """Explicit path, then PATH, then the copy ffmpeg_install fetched on first run."""
     candidates = [explicit] if explicit else []
-    candidates += [shutil.which("ffmpeg")]
+    candidates += [shutil.which("ffmpeg"), DATA_DIR / "ffmpeg" / "ffmpeg.exe"]
     for c in candidates:
         if c and Path(c).exists():
             return Path(c)
@@ -232,8 +233,9 @@ def ffmpeg_version(explicit: str | None = None) -> str | None:
     m = re.search(r"ffmpeg version (\S+)", out.stdout)
     if not m:
         return "unknown"
-    # "7.0-essentials_build-www.gyan.dev" -> "7.0"
-    return re.split(r"[-_]", m.group(1))[0] or m.group(1)
+    # "7.0-essentials_build-www.gyan.dev" -> "7.0"; nightly "N-126732-g5d3cb3dc17-20260920" -> "N-126732"
+    parts = re.split(r"[-_]", m.group(1))
+    return "-".join(parts[:2]) if parts[0] == "N" and len(parts) > 1 else parts[0] or m.group(1)
 
 
 def _no_window() -> int:

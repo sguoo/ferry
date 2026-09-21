@@ -396,6 +396,7 @@ class DownloaderScreen(Screen):
         self._show_idle()
         self._refresh_env()
         context.bus.settings_changed.connect(self._on_settings_saved)
+        context.bus.ffmpeg_status.connect(self._on_ffmpeg_status)
         self._retry_after_settings = None
 
     # ------------------------------------------------------------- helpers
@@ -406,6 +407,12 @@ class DownloaderScreen(Screen):
         lbl.setText(f"ffmpeg {ver}" if ver else "ffmpeg 없음 · 병합/변환 불가")
         ico.set_color(C.SUCCESS if ver else C.ACCENT)
         self.output_dir = context.settings.save_dir
+
+    def _on_ffmpeg_status(self, text: str) -> None:
+        if not text:
+            return  # done or failed: settings_changed / the toast follow
+        self.ffmpeg_label.layout().itemAt(1).widget().setText(text)
+        self.ffmpeg_label.layout().itemAt(0).widget().set_color(C.TEXT2)
 
     def _set_result(self, widget: QWidget) -> None:
         clear_layout(self.result_box)

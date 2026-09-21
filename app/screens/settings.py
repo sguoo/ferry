@@ -141,13 +141,14 @@ class SettingsScreen(Screen):
         self.sw_bg = SwitchRow("다른 화면에서도 계속 재생", "재생 중에 다른 화면으로 이동하면 플레이어를 닫지 않고 하단 미니 재생바로 줄여서 계속 재생합니다. 끄면 화면을 이동할 때 재생을 멈춥니다.", True)
         self.sw_notify = SwitchRow("완료 알림", "다운로드가 끝나면 트레이 알림을 표시합니다.", True)
         self.sw_sound = SwitchRow("알림 사운드", "완료 알림과 함께 시스템 효과음을 재생합니다.", False)
-        for sw in (self.sw_clip, self.sw_bg, self.sw_notify, self.sw_sound):
+        self.sw_update = SwitchRow("자동 업데이트", "실행할 때 GitHub 릴리스를 확인하고 새 버전이 있으면 백그라운드로 내려받습니다. 앱을 닫을 때 적용됩니다.", True)
+        for sw in (self.sw_clip, self.sw_bg, self.sw_notify, self.sw_sound, self.sw_update):
             sec.form.addWidget(sw)
         self.add_section(sec)
         self.add_section(Divider())
 
         # ---------------------------------------------------------- tools
-        sec = SettingsSection("외부 도구", "스트림 병합과 오디오 변환에 ffmpeg가 필요합니다. PATH에 있으면 자동으로 찾습니다.")
+        sec = SettingsSection("외부 도구", "스트림 병합과 오디오 변환에 ffmpeg가 필요합니다. PATH에 있으면 자동으로 찾고, 없으면 첫 실행 때 자동으로 내려받습니다.")
         self.ffmpeg = CompositeField("cpu", "비워두면 PATH에서 찾습니다", "", mono=True)
         fbrowse = Button("찾아보기", "secondary", size="sm")
         fbrowse.clicked.connect(self._pick_ffmpeg)
@@ -215,6 +216,7 @@ class SettingsScreen(Screen):
         self.sw_bg.toggle.setChecked(s.background_play)
         self.sw_notify.toggle.setChecked(s.notify)
         self.sw_sound.toggle.setChecked(s.sound)
+        self.sw_update.toggle.setChecked(s.auto_update)
         self.ffmpeg.set_value(s.ffmpeg_path)
         self.cookies.setCurrentIndex(next((i for i, b in enumerate(COOKIE_BROWSERS) if b[1] == s.cookies_browser), 0))
         self.cookie_file.set_value(s.cookies_file)
@@ -252,6 +254,7 @@ class SettingsScreen(Screen):
         s.background_play = self.sw_bg.toggle.isChecked()
         s.notify = self.sw_notify.toggle.isChecked()
         s.sound = self.sw_sound.toggle.isChecked()
+        s.auto_update = self.sw_update.toggle.isChecked()
         s.ffmpeg_path = self.ffmpeg.edit.text().strip()
         s.cookies_browser = COOKIE_BROWSERS[self.cookies.currentIndex()][1]
         cookie_path = self.cookie_file.edit.text().strip()

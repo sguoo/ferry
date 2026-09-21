@@ -1,4 +1,4 @@
-"""User preferences, persisted as JSON next to the app (settings.json)."""
+"""User preferences, persisted as JSON in the per-user data dir (%LOCALAPPDATA%/Ferry/settings.json)."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ import json
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from .theme import ROOT
-from .youtube import DownloadOptions
+from .theme import DATA_DIR, ROOT
+from .youtube import DEFAULT_OUTPUT_DIR, DownloadOptions
 
-SETTINGS_PATH = ROOT / "settings.json"
+SETTINGS_PATH = DATA_DIR / "settings.json"
+_LEGACY_SETTINGS_PATH = ROOT / "settings.json"  # pre-DATA_DIR location (dev checkouts)
 
 QUALITY_CHOICES: list[tuple[str, int | None]] = [
     ("최고 화질 (bestvideo+bestaudio)", None),
@@ -44,7 +45,7 @@ def default_preset(quality: int | None) -> int:
 
 @dataclass
 class Settings:
-    save_path: str = str(ROOT / "downloads")
+    save_path: str = str(DEFAULT_OUTPUT_DIR)
     filename_template: str = "%(title)s [%(id)s].%(ext)s"
     quality: int | None = None          # max height; None = best
     container: str = "mp4"
@@ -53,6 +54,7 @@ class Settings:
     clipboard_watch: bool = True
     background_play: bool = True       # keep playing (with the mini bar) when switching screens
     notify: bool = True
+    auto_update: bool = True           # check GitHub Releases on launch and fetch a newer build
     sound: bool = False
     info_cache: bool = True
     ffmpeg_path: str = ""
@@ -97,6 +99,8 @@ class Settings:
 
 def load(path: Path = SETTINGS_PATH) -> Settings:
     s = Settings()
+    if not path.exists() and path == SETTINGS_PATH and _LEGACY_SETTINGS_PATH.exists():
+        path = _LEGACY_SETTINGS_PATH
     if not path.exists():
         return s
     try:
@@ -107,8 +111,11 @@ def load(path: Path = SETTINGS_PATH) -> Settings:
     for k, v in data.items():
         if k in known:
             setattr(s, k, v)
+    if "_MEI" in s.save_path and not s.save_dir.exists():
+        s.save_path = Settings.save_path  # older builds pointed at PyInstaller's temp dir, gone by now
     return s
 
 
 def save(s: Settings, path: Path = SETTINGS_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(s), ensure_ascii=False, indent=2), encoding="utf-8")

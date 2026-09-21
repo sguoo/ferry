@@ -41,11 +41,17 @@ class Pen:
     bold: bool = False
     italic: bool = False
     underline: bool = False
-    size: int = 100                 # percent of the base caption size
+    size: int = 100                 # srv3 sz; YouTube maps it as 1 + (sz - 100) / 400, see `scale`
     edge_color: str | None = None   # outline / glow colour
     edge_type: int = 0              # 0 none, 1 hard shadow, 2 bevel, 3 glow/outline, 4 soft shadow
     bg_color: str | None = None
     bg_alpha: int = 0
+
+    @property
+    def scale(self) -> float:
+        """Font scale relative to the base size. YouTube compresses sz by 4: sz=200 draws at 1.25x,
+        sz=700 at 2.5x (styled files use huge sz on invisible text to paint background boxes)."""
+        return max(0.5, 1 + (self.size - 100) / 400)
 
 
 @dataclass
@@ -96,7 +102,7 @@ class Cue:
             if pen.underline:
                 css.append("text-decoration: underline")
             if pen.size != 100 and base_px:
-                css.append(f"font-size: {max(8, round(base_px * max(30, pen.size) / 100))}px")
+                css.append(f"font-size: {max(8, round(base_px * pen.scale))}px")
             if pen.bg_color and pen.bg_alpha and not edge:
                 css.append(f"background-color: rgba({_r(pen.bg_color)}, {_g(pen.bg_color)}, {_b(pen.bg_color)}, {pen.bg_alpha / 255:.2f})")
             text = html_mod.escape(seg.text).replace("\n", "<br>")

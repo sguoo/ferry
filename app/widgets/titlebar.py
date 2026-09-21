@@ -2,13 +2,13 @@
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter
-from PySide6.QtWidgets import QFrame, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QPushButton, QSizePolicy, QWidget
 
-from .. import APP_NAME, APP_VERSION
+from .. import APP_NAME, APP_VERSION, context, updater
 from ..icon import render as render_icon
 from ..icons import icon
 from ..theme import C
-from .primitives import Badge, IconLabel, PulseDot, hbox, label
+from .primitives import Badge, Button, IconLabel, PulseDot, hbox, label
 
 
 class BrandMark(QWidget):
@@ -54,7 +54,15 @@ class TitleBar(QFrame):
         brand = hbox(gap=10)
         brand.addWidget(BrandMark())
         brand.addWidget(label(APP_NAME, "title", size=17))
-        brand.addWidget(Badge(f"v{APP_VERSION}", "neutral", mono=True))
+        self.version_badge = Badge(f"v{APP_VERSION}", "neutral", mono=True)
+        brand.addWidget(self.version_badge)
+        # self-update: the badge shows download progress, then this button offers the restart
+        self.update_btn = Button("", "primary", "refresh", "sm")
+        self.update_btn.clicked.connect(lambda: updater.apply(restart=True) and QApplication.quit())
+        self.update_btn.hide()
+        brand.addWidget(self.update_btn)
+        context.bus.update_status.connect(self._on_update_status)
+        context.bus.update_ready.connect(self._on_update_ready)
         lay.addLayout(brand)
         lay.addSpacing(16)
 
@@ -87,6 +95,15 @@ class TitleBar(QFrame):
         for b in (b_min, b_max, b_close):
             controls.addWidget(b)
         lay.addLayout(controls)
+
+    def _on_update_status(self, text: str) -> None:
+        self.version_badge.setText(text or f"v{APP_VERSION}")
+
+    def _on_update_ready(self, version: str) -> None:
+        self.version_badge.setText(f"v{APP_VERSION}")
+        self.update_btn.setText(f"v{version} 재시작하여 적용")
+        self.update_btn.setToolTip("지금 재시작하지 않아도 앱을 닫을 때 자동으로 적용됩니다")
+        self.update_btn.show()
 
     def set_clipboard(self, enabled: bool, last_url: str | None = None) -> None:
         if not enabled:

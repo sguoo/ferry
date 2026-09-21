@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QScrollArea, QStackedWidget, QSystem
 
 from pathlib import Path
 
-from . import APP_NAME, context, icon as app_icon, subtitles
+from . import APP_NAME, context, ffmpeg_install, icon as app_icon, subtitles, updater
 from .local import MEDIA_EXTS
 from .screens import Screen
 from .screens.downloader import YOUTUBE_URL, DownloaderScreen
@@ -110,6 +110,8 @@ class MainWindow(QWidget):
 
         self._current = "downloader"
         self.sidebar.select("downloader")
+        QTimer.singleShot(0, ffmpeg_install.ensure)  # first run without ffmpeg: fetch it in the background
+        QTimer.singleShot(1500, updater.check)  # newer GitHub release -> downloaded now, swapped in on exit
 
     # ------------------------------------------------------------ navigation
     def navigate(self, key: str) -> None:
@@ -210,6 +212,8 @@ class MainWindow(QWidget):
         for job in context.jobs.active:
             job.pause()
         self.tray.hide()
+        if updater.ready:
+            updater.apply(restart=False)
         super().closeEvent(event)
 
     def nativeEvent(self, event_type, message):

@@ -7,10 +7,13 @@ Rules carried over from reference/SKILL.md:
 - cards only where elevation communicates hierarchy, lists use dividers
 """
 
+import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent  # bundled files only: inside PyInstaller's temp _MEI dir when frozen
 ASSETS = ROOT / "assets"
+# user data (settings, downloads, caches) must live outside ROOT: the _MEI dir is wiped on every exit
+DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Ferry"
 ICON_DIR = ASSETS / "icons"
 
 
