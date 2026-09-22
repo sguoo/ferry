@@ -149,7 +149,7 @@ class SettingsScreen(Screen):
         self.add_section(Divider())
 
         # ---------------------------------------------------------- tools
-        sec = SettingsSection("외부 도구", "스트림 병합과 오디오 변환에 ffmpeg가 필요합니다. PATH에 있으면 자동으로 찾고, 없으면 첫 실행 때 자동으로 내려받습니다.")
+        sec = SettingsSection("외부 도구", "스트림 병합과 오디오 변환에 ffmpeg가, YouTube 로그인 세션으로 받을 때는 JavaScript 런타임(deno)이 필요합니다. PATH에 있으면 자동으로 찾고, 없으면 첫 실행 때 자동으로 내려받습니다.")
         self.ffmpeg = CompositeField("cpu", "비워두면 PATH에서 찾습니다", "", mono=True)
         fbrowse = Button("찾아보기", "secondary", size="sm")
         fbrowse.clicked.connect(self._pick_ffmpeg)

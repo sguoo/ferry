@@ -213,7 +213,7 @@ def ytdlp_version() -> str:
 
 
 def find_ffmpeg(explicit: str | None = None) -> Path | None:
-    """Explicit path, then PATH, then the copy ffmpeg_install fetched on first run."""
+    """Explicit path, then PATH, then the copy tools_install fetched on first run."""
     candidates = [explicit] if explicit else []
     candidates += [shutil.which("ffmpeg"), DATA_DIR / "ffmpeg" / "ffmpeg.exe"]
     for c in candidates:
@@ -236,6 +236,26 @@ def ffmpeg_version(explicit: str | None = None) -> str | None:
     # "7.0-essentials_build-www.gyan.dev" -> "7.0"; nightly "N-126732-g5d3cb3dc17-20260920" -> "N-126732"
     parts = re.split(r"[-_]", m.group(1))
     return "-".join(parts[:2]) if parts[0] == "N" and len(parts) > 1 else parts[0] or m.group(1)
+
+
+def find_deno(explicit: str | None = None) -> Path | None:
+    """JavaScript runtime for YouTube's player challenges: PATH, then the copy tools_install fetched."""
+    for c in ([explicit] if explicit else []) + [shutil.which("deno"), DATA_DIR / "deno" / "deno.exe"]:
+        if c and Path(c).exists():
+            return Path(c)
+    return None
+
+
+def deno_version(explicit: str | None = None) -> str | None:
+    exe = find_deno(explicit)
+    if exe is None:
+        return None
+    try:
+        out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=10, creationflags=_no_window())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"deno (\S+)", out.stdout)
+    return m.group(1) if m else None
 
 
 def _no_window() -> int:
@@ -265,7 +285,14 @@ def _base_opts(opts: DownloadOptions | None = None) -> dict:
         "ignoreerrors": False,
         "retries": 3,
         "socket_timeout": 20,
+        # YouTube's web clients (the only ones that honour a signed-in session) need yt-dlp's challenge solver
+        # script, which it fetches once from GitHub, plus a JS runtime to run it
+        "remote_components": ["ejs:github"],
+        "cachedir": str(DATA_DIR / "cache" / "yt-dlp"),
     }
+    deno = find_deno()
+    if deno is not None:
+        o["js_runtimes"] = {"deno": {"path": str(deno)}}
     if opts:
         if opts.ffmpeg_location:
             o["ffmpeg_location"] = opts.ffmpeg_location

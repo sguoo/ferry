@@ -13,7 +13,7 @@ class _Bus(QObject):
     settings_changed = Signal()
     library_changed = Signal()   # a download finished / folder rescanned
     notify = Signal(str, str)    # title, body -> tray toast
-    ffmpeg_status = Signal(str)  # first-run ffmpeg download progress text; '' when idle
+    tool_status = Signal(str)    # first-run ffmpeg/deno download progress text; '' when idle
     update_status = Signal(str)  # self-update download progress text; '' when idle
     update_ready = Signal(str)   # a newer Ferry.exe is downloaded; version string
     play = Signal(list, int, list)  # items (paths or urls), start index, titles -> in-app player

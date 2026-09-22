@@ -84,7 +84,10 @@ def apply(restart: bool = True) -> bool:
     lines.append('del "%~f0"')
     script.write_text("\r\n".join(lines) + "\r\n", encoding="mbcs", errors="replace")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-    subprocess.Popen(["cmd.exe", "/c", str(script)], creationflags=flags, close_fds=True, cwd=str(UPDATE_DIR))
+    # the onefile bootloader tags its child with _PYI_* / _MEIPASS; a relaunched exe that inherits them thinks it
+    # is that child, looks for python*.dll in our (soon deleted) _MEI dir and dies with "Failed to load Python DLL"
+    env = {k: v for k, v in os.environ.items() if not (k.startswith("_PYI_") or k.startswith("_MEIPASS"))}
+    subprocess.Popen(["cmd.exe", "/c", str(script)], creationflags=flags, close_fds=True, cwd=str(UPDATE_DIR), env=env)
     _applied = True
     return True
 

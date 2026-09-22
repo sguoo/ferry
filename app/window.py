@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QScrollArea, QStackedWidget, QSystem
 
 from pathlib import Path
 
-from . import APP_NAME, APP_VERSION, context, ffmpeg_install, icon as app_icon, subtitles, updater, workers
+from . import APP_NAME, APP_VERSION, context, icon as app_icon, subtitles, tools_install, updater, workers
 from .local import MEDIA_EXTS
 from .screens import Screen
 from .settings import SETTINGS_PATH
@@ -112,7 +112,7 @@ class MainWindow(QWidget):
 
         self._current = "downloader"
         self.sidebar.select("downloader")
-        QTimer.singleShot(0, ffmpeg_install.ensure)  # first run without ffmpeg: fetch it in the background
+        QTimer.singleShot(0, tools_install.ensure)  # first run without ffmpeg/deno: fetch them in the background
         QTimer.singleShot(1500, updater.check)  # newer GitHub release -> downloaded now, swapped in on exit
         context.bus.update_ready.connect(self._show_update)
         QTimer.singleShot(2500, self._whats_new)  # first launch after an update: this version's release notes
