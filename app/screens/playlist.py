@@ -72,6 +72,7 @@ class ItemRow(QWidget):
         super().__init__(parent)
         self.entry = entry
         self.job: Job | None = None
+        self.owned = False  # already in the library (same video id under the save folder)
         lay = hbox(self, gap=12, margins=(0, 12, 0, 12))
 
         self.check = Check("", True)
@@ -89,6 +90,10 @@ class ItemRow(QWidget):
         top = hbox(gap=8)
         self.title = label(entry.title, "title", size=15, elide=True)
         top.addWidget(self.title, 1)
+        self.own_badge = Badge("라이브러리에 있음", "neutral")
+        self.own_badge.setToolTip("저장 폴더에 같은 영상 ID의 파일이 이미 있습니다")
+        self.own_badge.hide()
+        top.addWidget(self.own_badge)
         self.pct = Badge("", "accent", mono=True)
         self.pct.hide()
         top.addWidget(self.pct)
@@ -131,8 +136,18 @@ class ItemRow(QWidget):
         self.title.update()
         self.preset.setEnabled(on)
         if self.job is None:
-            self.status.setText("준비 완료" if on else "제외됨")
+            self.status.setText("준비 완료" if on else ("이미 받음" if self.owned else "제외됨"))
             set_prop(self.status, "badge", "success" if on else "neutral")
+
+    def set_owned(self, owned: bool, exclude: bool) -> None:
+        """Mark the entry as already downloaded; with `exclude` it is unchecked and locked out of selection."""
+        self.owned = owned
+        self.own_badge.setVisible(owned)
+        locked = owned and exclude and self.job is None
+        if locked:
+            self.check.setChecked(False)
+        self.check.setEnabled(not locked)
+        self._on_toggled(self.checked)
 
     def bind(self, job: Job) -> None:
         self.job = job
@@ -479,6 +494,12 @@ class PlaylistScreen(Screen):
         tools.addWidget(self.all_check)
         self.sel_badge = Badge("", "accent", mono=True)
         tools.addWidget(self.sel_badge)
+        self.owned_check = Check("이미 받은 항목 제외", True)
+        self.owned_check.setToolTip("저장 폴더(하위 폴더 포함)에 같은 영상 ID의 파일이 있는 항목을 선택에서 뺍니다")
+        self.owned_check.toggled.connect(lambda _on: self._apply_owned())
+        tools.addWidget(self.owned_check)
+        self.owned_badge = Badge("확인 중…", "neutral", mono=True)
+        tools.addWidget(self.owned_badge)
         tools.addStretch()
         kind = Segmented(["비디오", "음원만"], 0)
         kind.changed.connect(lambda i: self._apply_preset_all(AUDIO_PRESET if i == 1 else _default_preset()))
@@ -532,7 +553,7 @@ class PlaylistScreen(Screen):
         foot.addWidget(self.foot_note)
         foot.addStretch()
         invert = Button("선택 반전", "secondary", size="sm")
-        invert.clicked.connect(lambda: [r.check.setChecked(not r.checked) for r in self.rows])
+        invert.clicked.connect(lambda: [r.check.setChecked(not r.checked) for r in self.rows if r.check.isEnabled()])
         foot.addWidget(invert)
         audio_all = Button("오디오 전용 일괄 전환", "secondary", "music", "sm")
         audio_all.clicked.connect(lambda: self._apply_preset_all(AUDIO_PRESET))
@@ -563,6 +584,25 @@ class PlaylistScreen(Screen):
 
         self._set(w)
         self._refresh_selection()
+        self._owned_ids: set[str] = set()
+        workers.call(local.owned_video_ids, context.settings.save_dir, finished=self._on_owned_ids, failed=lambda _e: None)
+
+    def _on_owned_ids(self, ids: set[str]) -> None:
+        if not alive(self.owned_badge):
+            return
+        self._owned_ids = ids
+        self._apply_owned()
+
+    def _apply_owned(self) -> None:
+        exclude = self.owned_check.isChecked()
+        n = 0
+        for r in self.rows:
+            owned = bool(r.entry.id) and r.entry.id in self._owned_ids
+            n += owned
+            r.set_owned(owned, exclude)
+        self.owned_badge.setText(f"{n}개 이미 있음" if n else "모두 새 항목")
+        set_prop(self.owned_badge, "badge", "accent" if n else "neutral")
+        self._refresh_selection()
 
     def _header(self, *cols: tuple[str, int], title: str, right_last: bool = True) -> object:
         header = hbox(gap=12, margins=(0, 4, 0, 10))
@@ -583,7 +623,8 @@ class PlaylistScreen(Screen):
 
     def _toggle_all(self, on: bool) -> None:
         for r in self.rows:
-            r.check.setChecked(on)
+            if r.check.isEnabled():
+                r.check.setChecked(on)
 
     def _apply_preset_all(self, idx: int, selected_only: bool = False) -> None:
         for r in self.rows:
@@ -596,7 +637,8 @@ class PlaylistScreen(Screen):
         except ValueError:
             return
         for r in self.rows:
-            r.check.setChecked(lo <= r.entry.index <= hi)
+            if r.check.isEnabled():
+                r.check.setChecked(lo <= r.entry.index <= hi)
 
     def _refresh_selection(self) -> None:
         if not alive(self.sel_badge):

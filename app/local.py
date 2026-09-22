@@ -24,6 +24,23 @@ from .youtube import find_ffmpeg
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts"}
 AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".opus", ".wav", ".ogg", ".aac"}
 MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
+
+_VIDEO_ID = re.compile(r"\[([A-Za-z0-9_-]{11})\](?:\.[A-Za-z0-9-]+)*$")  # "title [id].ext" / "title [id].ko.srt"
+
+
+def owned_video_ids(folder: Path | str) -> set[str]:
+    """YouTube ids of media already saved under `folder` (any depth), read off the "[id]" the filename template
+    keeps in every download's name. Cheap: names only, no probing."""
+    root = Path(folder)
+    ids: set[str] = set()
+    if not root.is_dir():
+        return ids
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            stem, ext = os.path.splitext(name)
+            if ext.lower() in MEDIA_EXTS and (m := _VIDEO_ID.search(stem)):
+                ids.add(m.group(1))
+    return ids
 PLAYLIST_EXTS = {".m3u", ".m3u8"}
 SUBTITLE_EXTS = {".srt", ".vtt", ".srv3"}
 
