@@ -33,6 +33,8 @@ UPDATE_DIR = DATA_DIR / "updates"
 EXE_NAME = f"{APP_NAME}.exe"
 
 ready: str | None = None        # version waiting in UPDATE_DIR
+notes: str = ""                 # that release's description (GitHub markdown), for the what's-new popup
+release_url: str = ""
 _task: workers.Task | None = None
 _new_exe: Path | None = None
 _applied = False               # helper already spawned (the restart button also triggers closeEvent)
@@ -61,18 +63,24 @@ def apply(restart: bool = True) -> bool:
         return False
     target = Path(sys.executable)
     script = UPDATE_DIR / "apply.bat"
+    log = UPDATE_DIR / "apply.log"
+    # the helper runs without a console, where `timeout` exits at once instead of sleeping; ping -n 2 waits ~1s
     lines = [
         "@echo off",
+        f'echo [%date% %time%] waiting for "{target}" to unlock >> "{log}"',
         "set n=0",
         ":retry",
         f'move /y "{_new_exe}" "{target}" >nul 2>&1 && goto done',
         "set /a n+=1",
-        "if %n% lss 60 (timeout /t 1 /nobreak >nul & goto retry)",
+        "if %n% lss 120 (ping -n 2 127.0.0.1 >nul & goto retry)",
+        f'echo [%date% %time%] gave up after %n% tries >> "{log}"',
         "exit /b 1",
         ":done",
+        f'echo [%date% %time%] replaced after %n% tries >> "{log}"',
     ]
     if restart:
-        lines.append(f'start "" "{target}"')
+        lines.append(f'start "" /D "{target.parent}" "{target}"')
+        lines.append(f'echo [%date% %time%] relaunched >> "{log}"')
     lines.append('del "%~f0"')
     script.write_text("\r\n".join(lines) + "\r\n", encoding="mbcs", errors="replace")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -91,8 +99,8 @@ def _version_tuple(tag: str) -> tuple[int, ...] | None:
     return tuple(int(x) for x in m.group(1).split(".")) if m else None
 
 
-def _fetch(on_progress) -> tuple[str, Path] | None:
-    """Return (version, exe path) when a newer release was downloaded, None when up to date."""
+def _fetch(on_progress) -> tuple[str, Path, dict] | None:
+    """Return (version, exe path, release json) when a newer release was downloaded, None when up to date."""
     req = urllib.request.Request(RELEASES_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{APP_VERSION}"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -118,7 +126,7 @@ def _fetch(on_progress) -> tuple[str, Path] | None:
     UPDATE_DIR.mkdir(parents=True, exist_ok=True)
     final = UPDATE_DIR / f"{APP_NAME}-{version}.exe"
     if final.exists() and final.stat().st_size == asset.get("size", -1):
-        return version, final  # picked up on a previous launch that was closed before applying
+        return version, final, release  # picked up on a previous launch that was closed before applying
     for stale in UPDATE_DIR.glob("*.exe"):
         stale.unlink(missing_ok=True)
 
@@ -148,7 +156,20 @@ def _fetch(on_progress) -> tuple[str, Path] | None:
         if blob.stat().st_size < 1_000_000:
             raise YoutubeError("내려받은 파일이 실행 파일로 보이지 않습니다", str(blob))
         os.replace(blob, final)
-    return version, final
+    return version, final, release
+
+
+def fetch_release_notes(version: str) -> tuple[str, str]:
+    """(description, html_url) of the release tagged with this version, for the post-update what's-new popup.
+    Raises YoutubeError when GitHub cannot be reached or the tag has no release."""
+    url = f"https://api.github.com/repos/{REPO}/releases/tags/v{version}"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            release = json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise YoutubeError("릴리스 정보를 가져오지 못했습니다", f"{url} · {exc}") from exc
+    return (release.get("body") or "").strip(), release.get("html_url") or ""
 
 
 def _emit_progress(p: Progress) -> None:
@@ -162,13 +183,15 @@ def _on_progress(p: Progress) -> None:
     context.bus.update_status.emit(text)
 
 
-def _on_done(result: tuple[str, Path] | None) -> None:
-    global ready, _new_exe, _task
+def _on_done(result: tuple[str, Path, dict] | None) -> None:
+    global ready, _new_exe, _task, notes, release_url
     context.bus.update_status.emit("")
     if result is None:
         _task = None
         return
-    ready, _new_exe = result
+    ready, _new_exe, release = result
+    notes = (release.get("body") or "").strip()
+    release_url = release.get("html_url") or ""
     context.bus.update_ready.emit(ready)
     context.bus.notify.emit(f"{APP_NAME} v{ready} 준비 완료", "제목 표시줄의 버튼으로 지금 재시작하거나, 다음에 앱을 닫을 때 자동으로 적용됩니다.")
 

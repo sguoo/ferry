@@ -44,8 +44,9 @@ class Pen:
     size: int = 100                 # srv3 sz; YouTube maps it as 1 + (sz - 100) / 400, see `scale`
     edge_color: str | None = None   # outline / glow colour
     edge_type: int = 0              # 0 none, 1 hard shadow, 2 bevel, 3 glow/outline, 4 soft shadow
-    bg_color: str | None = None
-    bg_alpha: int = 0
+    # YouTube's own default is a 75% black box behind the text; a pen only loses it by saying bo="0"
+    bg_color: str | None = "#080808"
+    bg_alpha: int = 191
 
     @property
     def scale(self) -> float:
@@ -204,8 +205,8 @@ def parse_srv3(text: str) -> list[Cue]:
                 size=int(el.get("sz", "100") or 100),
                 edge_color=_hex(el.get("ec"), None),
                 edge_type=int(el.get("et", "0") or 0),
-                bg_color=_hex(el.get("bc"), None),
-                bg_alpha=int(el.get("bo", "0") or 0),
+                bg_color=_hex(el.get("bc"), "#080808"),
+                bg_alpha=int(el.get("bo", "191") or 0),
             )
         for el in head.findall("wp"):
             wps[el.get("id", "")] = (int(el.get("ap", "7") or 7), float(el.get("ah", "50") or 50), float(el.get("av", "95") or 95))

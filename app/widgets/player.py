@@ -88,9 +88,10 @@ class CaptionWidget(QWidget):
         self.doc.setHtml(cue.html(elapsed_ms, base_px=base_px))
         if cue.has_edge:
             self.edge_doc.setHtml(cue.html(elapsed_ms, edge=True, base_px=base_px))
-        if self.doc.idealWidth() > max_width:
-            self.doc.setTextWidth(max_width)
-            self.edge_doc.setTextWidth(max_width)
+        # alignment only applies once the document has a width; with none set, every line hugs the left edge
+        width = min(self.doc.idealWidth(), max_width)
+        self.doc.setTextWidth(width)
+        self.edge_doc.setTextWidth(width)
         self._edge_px = max(1, round(base_px / 14))
         size = self.doc.size()
         self.resize(int(size.width()) + 2 * self.PAD, int(size.height()) + 2 * self.PAD)

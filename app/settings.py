@@ -56,6 +56,7 @@ class Settings:
     background_play: bool = True       # keep playing (with the mini bar) when switching screens
     notify: bool = True
     auto_update: bool = True           # check GitHub Releases on launch and fetch a newer build
+    last_seen_version: str = ""        # APP_VERSION whose what's-new popup was shown; differs right after an update
     sound: bool = False
     info_cache: bool = True
     ffmpeg_path: str = ""

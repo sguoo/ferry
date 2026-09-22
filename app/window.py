@@ -12,9 +12,10 @@ from PySide6.QtWidgets import QApplication, QScrollArea, QStackedWidget, QSystem
 
 from pathlib import Path
 
-from . import APP_NAME, context, ffmpeg_install, icon as app_icon, subtitles, updater
+from . import APP_NAME, APP_VERSION, context, ffmpeg_install, icon as app_icon, subtitles, updater, workers
 from .local import MEDIA_EXTS
 from .screens import Screen
+from .settings import SETTINGS_PATH
 from .screens.downloader import YOUTUBE_URL, DownloaderScreen
 from .screens.library import LibraryScreen
 from .screens.playlist import PlaylistScreen
@@ -24,6 +25,7 @@ from .widgets.primitives import hbox, reveal, vbox
 from .widgets.sidebar import Sidebar
 from .widgets.subtitle_viewer import SubtitleViewer
 from .widgets.titlebar import TitleBar
+from .widgets.update_dialog import UpdateDialog
 
 RESIZE_MARGIN = 7  # logical px; scaled by DPI at hit-test time
 
@@ -112,6 +114,8 @@ class MainWindow(QWidget):
         self.sidebar.select("downloader")
         QTimer.singleShot(0, ffmpeg_install.ensure)  # first run without ffmpeg: fetch it in the background
         QTimer.singleShot(1500, updater.check)  # newer GitHub release -> downloaded now, swapped in on exit
+        context.bus.update_ready.connect(self._show_update)
+        QTimer.singleShot(2500, self._whats_new)  # first launch after an update: this version's release notes
 
     # ------------------------------------------------------------ navigation
     def navigate(self, key: str) -> None:
@@ -180,6 +184,30 @@ class MainWindow(QWidget):
     def _track_subtitles(self, ms: int) -> None:
         if self.subs.isVisible() and self.subs.media and str(self.subs.media) == self.player.current_media():
             self.subs.highlight(ms)
+
+    # ------------------------------------------------------------- updates
+    def _show_update(self, version: str) -> None:
+        """What's-new popup with the release notes; the title-bar button stays for anyone who picks 나중에."""
+        UpdateDialog(version, updater.notes, updater.release_url, parent=self).open()
+
+    def _whats_new(self) -> None:
+        seen = context.settings.last_seen_version
+        if seen == APP_VERSION:
+            return
+        if not seen and not SETTINGS_PATH.exists():  # fresh install: nothing to compare against, just remember
+            context.settings.last_seen_version = APP_VERSION
+            context.save_settings()
+            return
+        # (an existing settings.json without last_seen_version is an upgrade from a build before this popup)
+
+        def show(result: tuple[str, str]) -> None:
+            notes, url = result
+            context.settings.last_seen_version = APP_VERSION
+            context.save_settings()
+            UpdateDialog(APP_VERSION, notes, url, installed=True, parent=self).open()
+
+        # offline or no release for this tag: stay quiet and try again next launch
+        workers.call(updater.fetch_release_notes, APP_VERSION, finished=show, failed=lambda _err: None)
 
     # ---------------------------------------------------------- notifications
     def _notify(self, title: str, body: str) -> None:
