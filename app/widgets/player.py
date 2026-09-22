@@ -3,15 +3,19 @@
     overlay.play([Path("a.mp4"), Path("b.mp3")], index=0)
     overlay.play(["https://...googlevideo.com/..."], titles=["Preview"])
 
-Keys: Space play/pause · ←/→ seek 5s · ↑/↓ volume · M mute · N/P next/prev · S subtitles · F fullscreen · Esc close
+Keys: Space play/pause · ←/→ seek 5s · ↑/↓ volume · M mute · N/P next/prev · R repeat · X shuffle · S subtitles
+      · F fullscreen · Esc close
 """
 
 from __future__ import annotations
 
+import random
+import re
+
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QPainter, QTextDocument, QTextOption
+from PySide6.QtGui import QColor, QPainter, QTextBlockFormat, QTextCursor, QTextDocument, QTextOption
 from PySide6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import QComboBox, QFrame, QGraphicsScene, QGraphicsView, QGridLayout, QSlider, QStackedWidget, QWidget
@@ -57,11 +61,20 @@ class SeekSlider(QSlider):
         return self._dragging
 
 
+_CJK = re.compile(r"[ᄀ-ᇿ぀-ヿ㄰-㆏㐀-䶿一-鿿가-힯]")  # takes the CJK fallback font
+
+
 class CaptionWidget(QWidget):
     """One subtitle window: rich text with an outline pass, anchored like YouTube's srv3 windows."""
 
     PAD = 8
     EDGE_OFFSETS = ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, -1), (0, 1), (-1, 0), (1, 0))
+    # measured off YouTube's desktop player: styled windows land at 2% + 0.96 * (ah, av) of the picture and may
+    # overflow its edges; each line is as tall as its biggest segment, 1.2 * font-size for Latin/blank segments
+    # and 1.45 for ones that use the CJK fallback font. Styled files position text with huge invisible spacer
+    # lines, so these ratios decide where the visible text ends up.
+    YT_INSET, YT_SPAN = 0.02, 0.96
+    LINE_LATIN, LINE_CJK = 1.2, 1.45
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
@@ -77,7 +90,7 @@ class CaptionWidget(QWidget):
 
     def set_cue(self, cue: subtitles.Cue, elapsed_ms: int, base_px: int, max_width: int) -> None:
         self.cue = cue
-        font = fonts.sans(base_px, 700 if cue.styled else 600)
+        font = fonts.sans(base_px, 400 if cue.styled else 600)  # styled pens say b="1" themselves
         opt = QTextOption()
         opt.setAlignment({0: Qt.AlignmentFlag.AlignLeft, 1: Qt.AlignmentFlag.AlignRight}.get(cue.justify, Qt.AlignmentFlag.AlignHCenter))
         opt.setWrapMode(QTextOption.WrapMode.WordWrap)
@@ -88,6 +101,8 @@ class CaptionWidget(QWidget):
         self.doc.setHtml(cue.html(elapsed_ms, base_px=base_px))
         if cue.has_edge:
             self.edge_doc.setHtml(cue.html(elapsed_ms, edge=True, base_px=base_px))
+        if cue.styled:
+            self._apply_line_heights(base_px)
         # alignment only applies once the document has a width; with none set, every line hugs the left edge
         width = min(self.doc.idealWidth(), max_width)
         self.doc.setTextWidth(width)
@@ -97,19 +112,44 @@ class CaptionWidget(QWidget):
         self.resize(int(size.width()) + 2 * self.PAD, int(size.height()) + 2 * self.PAD)
         self.update()
 
+    def _apply_line_heights(self, base_px: int) -> None:
+        heights = []
+        block = self.doc.firstBlock()
+        while block.isValid():
+            tallest = 0.0
+            for it in block:
+                frag = it.fragment()
+                px = frag.charFormat().font().pixelSize()
+                ratio = self.LINE_CJK if _CJK.search(frag.text()) else self.LINE_LATIN
+                tallest = max(tallest, (px if px > 0 else base_px) * ratio)
+            heights.append(tallest or base_px * self.LINE_LATIN)
+            block = block.next()
+        for d in (self.doc, self.edge_doc):
+            block = d.firstBlock()
+            for h in heights:
+                if not block.isValid():
+                    break
+                fmt = QTextBlockFormat()
+                fmt.setLineHeight(h, QTextBlockFormat.LineHeightTypes.FixedHeight.value)
+                QTextCursor(block).mergeBlockFormat(fmt)
+                block = block.next()
+
     def place(self, video: QRect) -> None:
         """Anchor point ap (0..8 = TL..BR) at (ah%, av%) of the picture; plain cues sit bottom-centre."""
         cue = self.cue
-        x = video.x() + video.width() * cue.ah / 100
-        y = video.y() + video.height() * cue.av / 100
         w, h = self.width(), self.height()
         col, row = cue.anchor % 3, cue.anchor // 3
-        x -= (0, w / 2, w)[col]
-        y -= (0, h / 2, h)[row]
-        if not cue.styled:
-            y = min(y, video.bottom() - 28 - h)
-        x = max(video.x(), min(x, video.right() - w))
-        y = max(video.y(), min(y, video.bottom() - h))
+        if cue.styled:
+            x = video.x() + video.width() * (self.YT_INSET + self.YT_SPAN * cue.ah / 100)
+            y = video.y() + video.height() * (self.YT_INSET + self.YT_SPAN * cue.av / 100)
+            x -= (0, w / 2, w)[col]
+            y -= (0, h / 2, h)[row]
+            # no clamping: authors rely on windows hanging past the picture edge (the host widget clips them)
+        else:
+            x = video.x() + video.width() * cue.ah / 100 - (0, w / 2, w)[col]
+            y = min(video.y() + video.height() * cue.av / 100 - (0, h / 2, h)[row], video.bottom() - 28 - h)
+            x = max(video.x(), min(x, video.right() - w))
+            y = max(video.y(), min(y, video.bottom() - h))
         self.move(int(x), int(y))
 
     def paintEvent(self, _):
@@ -153,6 +193,9 @@ class PlayerOverlay(QWidget):
         self.queue: list[str] = []
         self.titles: list[str] = []
         self.index = -1
+        self.repeat = context.settings.player_repeat if context.settings.player_repeat in ("off", "all", "one") else "off"
+        self.shuffle = context.settings.player_shuffle
+        self._order: list[int] = []  # play order over queue indices while shuffling
         self._fullscreen = False
         self.cues: list[subtitles.Cue] = []
         self.sidecars: list[Path] = []
@@ -269,6 +312,14 @@ class PlayerOverlay(QWidget):
         self.next_btn = IconButton("chevron-right", "다음 (N)", flat=True)
         self.next_btn.clicked.connect(self.next)
         ctl.addWidget(self.next_btn)
+        ctl.addSpacing(4)
+        self.repeat_btn = IconButton("repeat", "", flat=True)
+        self.repeat_btn.clicked.connect(self.cycle_repeat)
+        ctl.addWidget(self.repeat_btn)
+        self.shuffle_btn = IconButton("shuffle", "", flat=True)
+        self.shuffle_btn.clicked.connect(self.toggle_shuffle)
+        ctl.addWidget(self.shuffle_btn)
+        self._sync_mode_buttons()
         ctl.addSpacing(12)
         self.mute_btn = IconButton("waveform", "음소거 (M)", flat=True)
         self.mute_btn.clicked.connect(self.toggle_mute)
@@ -306,7 +357,7 @@ class PlayerOverlay(QWidget):
         bl.addLayout(ctl)
         root.addWidget(bar)
 
-        self.hint = label("Space 재생/정지 · ←→ 5초 · ↑↓ 음량 · M 음소거 · N/P 다음/이전 · S 자막 · F 전체 화면 · Esc 닫기", "muted", align=Qt.AlignmentFlag.AlignCenter)
+        self.hint = label("Space 재생/정지 · ←→ 5초 · ↑↓ 음량 · M 음소거 · N/P 다음/이전 · R 반복 · X 셔플 · S 자막 · F 전체 화면 · Esc 닫기", "muted", align=Qt.AlignmentFlag.AlignCenter)
         bl.addWidget(self.hint)
 
     # ------------------------------------------------------------------ api
@@ -316,7 +367,9 @@ class PlayerOverlay(QWidget):
         if not self.queue:
             return
         self.restore()
-        self._load(max(0, min(index, len(self.queue) - 1)))
+        index = max(0, min(index, len(self.queue) - 1))
+        self._reshuffle(index)
+        self._load(index)
 
     def close(self) -> None:
         self.player.stop()
@@ -369,8 +422,8 @@ class PlayerOverlay(QWidget):
         self.audio_title.setText(name)
         self.audio_sub.setText(str(Path(src).parent) if not is_url else "")
         self.error.hide()
-        self.prev_btn.setEnabled(index > 0)
-        self.next_btn.setEnabled(index < len(self.queue) - 1)
+        self.prev_btn.setEnabled(self._step(-1) is not None or index > 0)
+        self.next_btn.setEnabled(self._step(1) is not None)
         self.player.setSource(QUrl(src) if is_url else QUrl.fromLocalFile(src))
         self._setup_subtitles(Path(src) if not is_url else None)
         self.player.play()
@@ -487,7 +540,7 @@ class PlayerOverlay(QWidget):
             return
         self._caption_key = key
         rect = self._video_rect()
-        base_px = max(16, int(rect.height() * 0.045))
+        base_px = max(16, int(rect.height() / 22.5))  # YouTube's default caption size
         while len(self.captions) < len(active):
             self.captions.append(CaptionWidget(self.video_host))
         for cap, cue in zip(self.captions, active):
@@ -516,14 +569,64 @@ class PlayerOverlay(QWidget):
             self.player.play()
 
     def next(self) -> None:
-        if self.index < len(self.queue) - 1:
-            self._load(self.index + 1)
+        nxt = self._step(1)
+        if nxt is not None:
+            self._load(nxt)
 
     def previous(self) -> None:
-        if self.player.position() > 3000 or self.index == 0:
+        prev = self._step(-1)
+        if self.player.position() > 3000 or prev is None:
             self.player.setPosition(0)
         else:
-            self._load(self.index - 1)
+            self._load(prev)
+
+    # ------------------------------------------------------ repeat / shuffle
+    def _reshuffle(self, first: int) -> None:
+        """New random order that starts with `first` (the track already playing)."""
+        rest = [i for i in range(len(self.queue)) if i != first]
+        random.shuffle(rest)
+        self._order = [first] + rest
+
+    def _step(self, delta: int) -> int | None:
+        """Queue index `delta` (+1/-1) steps away in play order; None at the end unless repeating all."""
+        if not self.queue:
+            return None
+        order = self._order if self.shuffle and len(self._order) == len(self.queue) else list(range(len(self.queue)))
+        pos = order.index(self.index) if self.index in order else 0
+        pos += delta
+        if 0 <= pos < len(order):
+            return order[pos]
+        if self.repeat == "all":
+            return order[pos % len(order)]
+        return None
+
+    def cycle_repeat(self) -> None:
+        self.repeat = {"off": "all", "all": "one", "one": "off"}[self.repeat]
+        context.settings.player_repeat = self.repeat
+        context.save_settings()
+        self._sync_mode_buttons()
+
+    def toggle_shuffle(self) -> None:
+        self.shuffle = not self.shuffle
+        if self.shuffle and self.index >= 0:
+            self._reshuffle(self.index)
+        context.settings.player_shuffle = self.shuffle
+        context.save_settings()
+        self._sync_mode_buttons()
+
+    def set_shuffle(self, on: bool) -> None:
+        if on != self.shuffle:
+            self.toggle_shuffle()
+
+    def _sync_mode_buttons(self) -> None:
+        on = self.repeat != "off"
+        self.repeat_btn.setIcon(icon("repeat-1" if self.repeat == "one" else "repeat", C.ACCENT if on else C.TEXT2, 16))
+        self.repeat_btn.setToolTip({"off": "반복 없음 (R)", "all": "전체 반복 (R)", "one": "한 곡 반복 (R)"}[self.repeat])
+        self.shuffle_btn.setIcon(icon("shuffle", C.ACCENT if self.shuffle else C.TEXT2, 16))
+        self.shuffle_btn.setToolTip("셔플 켜짐 (X)" if self.shuffle else "셔플 꺼짐 (X)")
+        if self.index >= 0:
+            self.prev_btn.setEnabled(self._step(-1) is not None or self.index > 0)
+            self.next_btn.setEnabled(self._step(1) is not None)
 
     def seek_by(self, delta_ms: int) -> None:
         self.player.setPosition(max(0, min(self.player.duration(), self.player.position() + delta_ms)))
@@ -565,11 +668,15 @@ class PlayerOverlay(QWidget):
             self.player.setPosition(self._pending_seek)
             self._pending_seek = None
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            if self.index < len(self.queue) - 1:
-                self.next()
-            else:
+            nxt = self.index if self.repeat == "one" else self._step(1)
+            if nxt is None:
                 self.player.setPosition(0)
                 self.player.pause()
+            elif nxt == self.index:
+                self.player.setPosition(0)
+                self.player.play()
+            else:
+                self._load(nxt)
         elif status == QMediaPlayer.MediaStatus.InvalidMedia:
             self._show_error("이 파일을 재생할 수 없습니다 (지원하지 않는 코덱이거나 손상됨).")
 
@@ -601,6 +708,10 @@ class PlayerOverlay(QWidget):
             self.next()
         elif k == Qt.Key.Key_P:
             self.previous()
+        elif k == Qt.Key.Key_R:
+            self.cycle_repeat()
+        elif k == Qt.Key.Key_X:
+            self.toggle_shuffle()
         elif k == Qt.Key.Key_F:
             self.toggle_fullscreen()
         elif k == Qt.Key.Key_S:

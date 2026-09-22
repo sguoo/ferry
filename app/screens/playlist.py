@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -235,6 +236,37 @@ class LocalRow(QWidget):
         self.title.update()
         self.status.setText("재생 가능" if on else "제외됨")
         set_prop(self.status, "badge", "success" if on else "neutral")
+
+
+class FolderRow(QWidget):
+    """Group header when the local list is split by sub-folder: name, count, select-all and play buttons."""
+
+    def __init__(self, name: str, rows: list[LocalRow], parent=None):
+        super().__init__(parent)
+        self.rows = rows
+        self.setProperty("surface", True)
+        lay = hbox(self, gap=10, margins=(12, 8, 12, 8))
+        self.check = Check("", all(r.checked for r in rows))
+        self.check.setFixedWidth(COL_CHECK)
+        self.check.toggled.connect(lambda on: [r.check.setChecked(on) for r in rows])
+        lay.addWidget(self.check)
+        lay.addWidget(IconLabel("folder", C.ACCENT, 16))
+        lay.addWidget(label(name or "(루트)", "body-strong", elide=True), 1)
+        total = sum(r.file.duration or 0 for r in rows)
+        lay.addWidget(label(f"{len(rows)}개 · {fmt_duration_long(total)}", "muted", mono=True))
+        self.play_btn = Button("폴더 재생", "secondary", "play", "sm")
+        lay.addWidget(self.play_btn)
+        self.shuffle_btn = Button("랜덤", "ghost", "shuffle", "sm")
+        lay.addWidget(self.shuffle_btn)
+        for r in rows:
+            r.check.toggled.connect(self._sync)
+
+    def _sync(self, _on: bool) -> None:
+        if not alive(self.check):
+            return
+        self.check.blockSignals(True)
+        self.check.setChecked(all(r.checked for r in self.rows))
+        self.check.blockSignals(False)
 
 
 # --------------------------------------------------------------------------- #
@@ -693,6 +725,12 @@ class PlaylistScreen(Screen):
         kind = Segmented(["전체", "비디오", "음원만"], 0)
         kind.changed.connect(self._filter_local_kind)
         tools.addWidget(kind)
+        tools.addSpacing(8)
+        has_folders = len({f.subfolder(pl.folder) for f in pl.files}) > 1
+        self.group_check = Check("폴더별로 묶기", has_folders)
+        self.group_check.setEnabled(has_folders)
+        self.group_check.toggled.connect(lambda _on: self._layout_local_rows())
+        tools.addWidget(self.group_check)
         head.body.addLayout(tools)
 
         order = hbox(gap=10)
@@ -708,6 +746,10 @@ class PlaylistScreen(Screen):
         play_sel = Button("선택 항목 재생", "secondary", "play", "sm")
         play_sel.clicked.connect(lambda: self._play_local())
         order.addWidget(play_sel)
+        play_rand = Button("랜덤 재생", "secondary", "shuffle", "sm")
+        play_rand.setToolTip("선택 항목을 무작위 순서로 재생합니다")
+        play_rand.clicked.connect(lambda: self._play_local(shuffle=True))
+        order.addWidget(play_rand)
         rescan = Button("폴더 다시 읽기", "secondary", "refresh", "sm")
         rescan.clicked.connect(lambda: self._scan(pl.folder))
         order.addWidget(rescan)
@@ -765,25 +807,43 @@ class PlaylistScreen(Screen):
         self._refresh_local_selection()
 
     def _layout_local_rows(self) -> None:
-        # rows are re-used across sorts, so detach them instead of deleting
+        # rows are re-used across sorts, so detach them instead of deleting; headers/dividers are rebuilt
         while self.local_box.count():
             item = self.local_box.takeAt(0)
             w = item.widget()
-            if isinstance(w, Divider):
-                w.deleteLater()
-            elif w is not None:
+            if isinstance(w, LocalRow):
                 w.setParent(None)
-        for i, row in enumerate(self.local_rows):
-            if i:
-                self.local_box.addWidget(Divider())
-            row.set_index(i + 1)
-            self.local_box.addWidget(row)
+            elif w is not None:
+                w.hide()
+                w.deleteLater()
+        grouped = alive(self.group_check) and self.group_check.isChecked()
+        groups: dict[str, list[LocalRow]] = {}
+        for row in self.local_rows:
+            groups.setdefault(row.file.subfolder(self.local.folder) if grouped else "", []).append(row)
+        n = 0
+        for gi, (name, rows) in enumerate(sorted(groups.items(), key=lambda kv: local.natural_key(kv[0]))):
+            if grouped:
+                if gi:
+                    self.local_box.addSpacing(10)
+                header = FolderRow(name, rows)
+                header.play_btn.clicked.connect(lambda _=False, rs=rows: self._play_local(rows=rs))
+                header.shuffle_btn.clicked.connect(lambda _=False, rs=rows: self._play_local(rows=rs, shuffle=True))
+                self.local_box.addWidget(header)
+            for i, row in enumerate(rows):
+                if i or grouped:
+                    self.local_box.addWidget(Divider())
+                n += 1
+                row.set_index(n)
+                self.local_box.addWidget(row)
 
-    def _play_local(self, start: LocalRow | None = None) -> None:
-        """Play the checked files in table order; `start` picks the first one (it is included even if unchecked)."""
-        rows = [r for r in self.local_rows if r.checked or r is start]
+    def _play_local(self, start: LocalRow | None = None, rows: list[LocalRow] | None = None, shuffle: bool = False) -> None:
+        """Play the checked files (of `rows`, default the whole table) in table order, or in a random order with
+        `shuffle`; `start` picks the first one and is included even if unchecked."""
+        rows = [r for r in (rows if rows is not None else self.local_rows) if r.checked or r is start]
         if not rows:
             return
+        if shuffle:
+            random.shuffle(rows)
         index = rows.index(start) if start in rows else 0
         context.bus.play.emit([str(r.file.path) for r in rows], index, [r.file.name for r in rows])
 

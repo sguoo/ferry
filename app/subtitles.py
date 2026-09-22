@@ -106,9 +106,13 @@ class Cue:
                 css.append(f"font-size: {max(8, round(base_px * pen.scale))}px")
             if pen.bg_color and pen.bg_alpha and not edge:
                 css.append(f"background-color: rgba({_r(pen.bg_color)}, {_g(pen.bg_color)}, {_b(pen.bg_color)}, {pen.bg_alpha / 255:.2f})")
-            text = html_mod.escape(seg.text).replace("\n", "<br>")
-            parts.append(f'<span style="{"; ".join(css)}">{text}</span>')
-        return "".join(parts)
+            # one <div> per line: the player sets each line's height separately, the way YouTube's layout does
+            style = "; ".join(css)
+            for i, piece in enumerate(seg.text.split("\n")):
+                if i:
+                    parts.append("</div><div>")
+                parts.append(f'<span style="{style}">{html_mod.escape(piece) or _ZW}</span>')
+        return "<div>" + "".join(parts) + "</div>"
 
     @property
     def has_edge(self) -> bool:
