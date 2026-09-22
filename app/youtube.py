@@ -293,9 +293,12 @@ def _base_opts(opts: DownloadOptions | None = None) -> dict:
     deno = find_deno()
     if deno is not None:
         o["js_runtimes"] = {"deno": {"path": str(deno)}}
+    # yt-dlp only looks on PATH by itself, so hand it whatever find_ffmpeg() turned up - otherwise a managed
+    # copy under DATA_DIR shows as "detected" in the UI while merging/conversion fails with "ffmpeg not found"
+    ffmpeg = find_ffmpeg(opts.ffmpeg_location if opts else None)
+    if ffmpeg is not None:
+        o["ffmpeg_location"] = str(ffmpeg)
     if opts:
-        if opts.ffmpeg_location:
-            o["ffmpeg_location"] = opts.ffmpeg_location
         if opts.cookies_file:
             o["cookiefile"] = opts.cookies_file
         elif opts.cookies_from_browser:
