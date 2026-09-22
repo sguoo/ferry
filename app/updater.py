@@ -7,7 +7,8 @@
 Progress goes out on context.bus.update_status(str) ("" when idle); update_ready(version) once downloaded.
 
 Releases must carry the onefile build as an asset named Ferry.exe (or a .zip holding it); the tag is the
-version ("v0.2.0"), compared numerically against APP_VERSION.
+version ("v0.2.0"), compared numerically against APP_VERSION. Pre-releases count too (GitHub's "latest"
+endpoint hides them, so the release list is scanned); tags without a number ("pre-release") are ignored.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from .theme import DATA_DIR
 from .youtube import Progress, YoutubeError
 
 REPO = "sguoo/ferry"
-LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=20"
 UPDATE_DIR = DATA_DIR / "updates"
 EXE_NAME = f"{APP_NAME}.exe"
 
@@ -92,16 +93,20 @@ def _version_tuple(tag: str) -> tuple[int, ...] | None:
 
 def _fetch(on_progress) -> tuple[str, Path] | None:
     """Return (version, exe path) when a newer release was downloaded, None when up to date."""
-    req = urllib.request.Request(LATEST_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    req = urllib.request.Request(RELEASES_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{APP_VERSION}"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            release = json.loads(resp.read().decode("utf-8"))
+            releases = json.loads(resp.read().decode("utf-8"))
     except (OSError, ValueError) as exc:
-        raise YoutubeError("업데이트 확인 실패", f"{LATEST_URL}\n{exc}") from exc
-    tag = release.get("tag_name") or ""
-    latest, current = _version_tuple(tag), _version_tuple(APP_VERSION)
-    if not latest or not current or latest <= current:
+        raise YoutubeError("업데이트 확인 실패", f"{RELEASES_URL}\n{exc}") from exc
+    current = _version_tuple(APP_VERSION)
+    candidates = [(v, r) for r in releases if not r.get("draft") and (v := _version_tuple(r.get("tag_name") or ""))]
+    if not current or not candidates:
         return None
+    latest, release = max(candidates, key=lambda c: c[0])
+    if latest <= current:
+        return None
+    tag = release["tag_name"]
     version = tag.lstrip("v")
     assets = release.get("assets") or []
     asset = next((a for a in assets if a.get("name", "").lower() == EXE_NAME.lower()), None) or next(

@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QComboBox, QFileDialog, QLineEdit, QWidget
 
 from .. import context, fonts, workers, youtube
+from ..widgets import login
 from ..settings import CONTAINERS, COOKIE_BROWSERS, LANGUAGES, QUALITY_CHOICES, THREAD_CHOICES, Settings
 from ..youtube import DownloadOptions
 from ..theme import C
@@ -161,18 +162,31 @@ class SettingsScreen(Screen):
 
         # ---------------------------------------------------------- youtube account
         sec = SettingsSection(
-            "YouTube 계정 연동 (쿠키)",
+            "YouTube 계정 연동",
             "\"봇이 아님을 확인\" 오류, 연령 제한·회원 전용 영상은 로그인 세션이 있어야 받을 수 있습니다. "
-            "브라우저의 쿠키를 그대로 쓰거나, 로그인된 브라우저에서 내보낸 cookies.txt를 지정하세요.",
+            "아래 버튼으로 앱 안에서 로그인하면 됩니다. 직접 내보낸 cookies.txt나 브라우저 쿠키를 쓰고 싶을 때만 아래 항목을 채우세요.",
         )
+        login_row = QWidget()
+        lrow = hbox(login_row, gap=10)
+        self.login_btn = Button("YouTube 로그인", "primary", "user")
+        self.login_btn.clicked.connect(self._login)
+        lrow.addWidget(self.login_btn)
+        self.logout_btn = Button("로그아웃", "secondary", size="md")
+        self.logout_btn.clicked.connect(self._logout)
+        lrow.addWidget(self.logout_btn)
+        self.login_status = label("", "muted", wrap=True)
+        lrow.addWidget(self.login_status, 1)
+        self.login_field = FormField("앱에서 로그인 (권장)", login_row, "Chrome(없으면 Edge)이 Ferry 전용 프로필로 열립니다. 그 창에서 Google 로그인을 마치면 세션이 앱에 저장되고 창은 자동으로 닫힙니다. 평소 쓰는 브라우저 프로필은 건드리지 않습니다.")
+        sec.form.addWidget(self.login_field)
+        self._refresh_login()
         self.cookie_file = CompositeField("shield", "예: C:\\Users\\me\\Downloads\\youtube.com_cookies.txt", "", mono=True)
         cbrowse = Button("찾아보기", "secondary", size="sm")
         cbrowse.clicked.connect(self._pick_cookie_file)
         self.cookie_file.add_trailing(cbrowse)
         self.cookie_file_field = FormField(
-            "cookies.txt 파일 (권장)",
+            "cookies.txt 파일",
             self.cookie_file,
-            "가장 확실한 방법입니다. Chrome/Edge 확장 'Get cookies.txt LOCALLY'로 youtube.com에 로그인한 상태에서 내보낸 Netscape 형식 파일을 고르세요. 지정하면 아래 브라우저 설정보다 우선합니다.",
+            "Chrome/Edge 확장 'Get cookies.txt LOCALLY'로 youtube.com에 로그인한 상태에서 내보낸 Netscape 형식 파일. 지정하면 앱 로그인과 브라우저 설정보다 우선합니다.",
         )
         sec.form.addWidget(self.cookie_file_field)
         self.cookies = _combo([b[0] for b in COOKIE_BROWSERS], 0)
@@ -287,6 +301,27 @@ class SettingsScreen(Screen):
         if chosen:
             field.set_value(chosen)
 
+    def _refresh_login(self) -> None:
+        on = login.is_logged_in()
+        self.login_status.setText(login.status())
+        self.login_status.setStyleSheet(f"color: {C.SUCCESS if on else C.TEXT3}; background: transparent;")
+        self.login_btn.setText("다시 로그인" if on else "YouTube 로그인")
+        self.logout_btn.setVisible(on)
+
+    def _login(self) -> None:
+        login.open_login(self, self._login_done)
+
+    def _login_done(self, count: int) -> None:
+        self._refresh_login()
+        self.cookie_status.setText(f"앱 로그인 세션 저장됨 (쿠키 {count}개). 연결 테스트로 확인할 수 있습니다.")
+        self.cookie_status.setStyleSheet(f"color: {C.SUCCESS}; background: transparent;")
+        context.bus.settings_changed.emit()  # download options pick the new cookies up
+
+    def _logout(self) -> None:
+        login.logout()
+        self._refresh_login()
+        context.bus.settings_changed.emit()
+
     def _pick_cookie_file(self) -> None:
         chosen, _ = QFileDialog.getOpenFileName(self, "cookies.txt 선택", self.cookie_file.edit.text() or str(Path.home() / "Downloads"), "쿠키 파일 (*.txt);;모든 파일 (*)")
         if chosen:
@@ -296,7 +331,7 @@ class SettingsScreen(Screen):
     def _test_cookies(self) -> None:
         """Try the currently *entered* cookie source (not yet saved) against YouTube."""
         opts = DownloadOptions(
-            cookies_file=self.cookie_file.edit.text().strip() or None,
+            cookies_file=self.cookie_file.edit.text().strip() or (str(login.COOKIES_PATH) if login.is_logged_in() else None),
             cookies_from_browser=COOKIE_BROWSERS[self.cookies.currentIndex()][1] or None,
         )
         self.cookie_test_btn.setEnabled(False)

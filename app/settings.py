@@ -10,6 +10,7 @@ from .theme import DATA_DIR, ROOT
 from .youtube import DEFAULT_OUTPUT_DIR, DownloadOptions
 
 SETTINGS_PATH = DATA_DIR / "settings.json"
+LOGIN_COOKIES = DATA_DIR / "cookies.txt"  # written by the Chrome/Edge sign-in (app/chrome.py)
 _LEGACY_SETTINGS_PATH = ROOT / "settings.json"  # pre-DATA_DIR location (dev checkouts)
 
 QUALITY_CHOICES: list[tuple[str, int | None]] = [
@@ -93,7 +94,7 @@ class Settings:
             concurrent_fragments=4,
             ffmpeg_location=self.ffmpeg_path or None,
             cookies_from_browser=self.cookies_browser or None,
-            cookies_file=self.cookies_file or None,
+            cookies_file=self.cookies_file or (str(LOGIN_COOKIES) if LOGIN_COOKIES.is_file() else None),
         )
 
 

@@ -535,7 +535,7 @@ def test_cookies(opts: DownloadOptions) -> str:
         if "login" in raw.lower() or "sign in" in raw.lower():
             raise YoutubeError(f"쿠키는 읽었지만 로그인 세션이 아닙니다 (YouTube/Google 쿠키 {count}개). 브라우저에서 YouTube에 로그인한 뒤 다시 내보내세요.", raw) from exc
         raise _friendly(exc) from exc
-    source = "cookies.txt" if opts.cookies_file else opts.cookies_from_browser
+    source = ("Ferry 로그인" if Path(opts.cookies_file).name == "cookies.txt" and Path(opts.cookies_file).parent == DATA_DIR else "cookies.txt") if opts.cookies_file else opts.cookies_from_browser
     if not logged_in:
         raise YoutubeError(f"{source}에서 쿠키 {count}개를 읽었지만 로그인 세션 쿠키(SAPISID/LOGIN_INFO)가 없습니다. 브라우저에서 YouTube에 로그인한 상태로 다시 내보내세요.")
     return f"{source}에서 YouTube/Google 쿠키 {count}개 읽음 · 로그인 세션 확인됨"
