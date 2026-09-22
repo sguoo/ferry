@@ -28,19 +28,23 @@ MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
 _VIDEO_ID = re.compile(r"\[([A-Za-z0-9_-]{11})\](?:\.[A-Za-z0-9-]+)*$")  # "title [id].ext" / "title [id].ko.srt"
 
 
-def owned_video_ids(folder: Path | str) -> set[str]:
-    """YouTube ids of media already saved under `folder` (any depth), read off the "[id]" the filename template
-    keeps in every download's name. Cheap: names only, no probing."""
+def owned_video_files(folder: Path | str) -> dict[str, list[Path]]:
+    """YouTube id -> media files already saved under `folder` (any depth), read off the "[id]" the filename
+    template keeps in every download's name. Cheap: names only, no probing."""
     root = Path(folder)
-    ids: set[str] = set()
+    found: dict[str, list[Path]] = {}
     if not root.is_dir():
-        return ids
+        return found
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
             stem, ext = os.path.splitext(name)
             if ext.lower() in MEDIA_EXTS and (m := _VIDEO_ID.search(stem)):
-                ids.add(m.group(1))
-    return ids
+                found.setdefault(m.group(1), []).append(Path(dirpath) / name)
+    return found
+
+
+def owned_video_ids(folder: Path | str) -> set[str]:
+    return set(owned_video_files(folder))
 PLAYLIST_EXTS = {".m3u", ".m3u8"}
 SUBTITLE_EXTS = {".srt", ".vtt", ".srv3"}
 
@@ -275,7 +279,8 @@ def _probe(ffprobe: Path, f: LocalFile) -> None:
         str(f.path),
     ]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # ffprobe prints UTF-8 (file names with emoji etc.); the locale codec would raise in the reader thread
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         data = json.loads(out.stdout or "{}")
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         return

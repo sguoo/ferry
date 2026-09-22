@@ -291,6 +291,15 @@ def build_qss() -> str:
     QSlider::handle:horizontal:hover {{ background: #ffffff; }}
 
     /* ---------- misc ---------- */
+    QMenu {{
+        background: {C.BG2}; color: {C.TEXT};
+        border: 1px solid {C.BORDER2}; border-radius: {R.SM}px; padding: 6px;
+    }}
+    QMenu::item {{ padding: 7px 28px 7px 12px; border-radius: 5px; }}
+    QMenu::item:selected {{ background: {C.BG3}; }}
+    QMenu::item:disabled {{ color: {C.TEXT3}; }}
+    QMenu::separator {{ height: 1px; background: {C.BORDER}; margin: 6px 4px; }}
+    QMenu::right-arrow {{ width: 10px; height: 10px; }}
     QToolTip {{
         background: {C.BG2}; color: {C.TEXT};
         border: 1px solid {C.BORDER2}; border-radius: {R.SM}px; padding: 6px 8px;

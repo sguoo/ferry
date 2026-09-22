@@ -9,7 +9,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QSizePolicy, QWidget
 
-from .. import context, local, subtitles, workers, youtube
+from .. import collections, context, local, subtitles, workers, youtube
+from ..widgets import dialogs, media_menu
 from ..local import LocalFile, LocalPlaylist
 from ..theme import C
 from ..widgets.primitives import (
@@ -111,6 +112,10 @@ class LibraryCard(QFrame):
         reveal.clicked.connect(lambda: local.open_in_explorer(file.path))
         foot.addWidget(reveal)
         lay.addLayout(foot)
+        self.setToolTip("우클릭: 재생목록으로 이동 · 삭제")
+
+    def contextMenuEvent(self, event):
+        media_menu.show(self, [self.file.path], event.globalPos())
 
 
 class SubtitleCard(QFrame):
@@ -191,6 +196,10 @@ class LibraryScreen(Screen):
         rescan = Button("다시 스캔", "secondary", "refresh")
         rescan.clicked.connect(self.rescan)
         hl.addWidget(rescan)
+        new_pl = Button("새 재생목록", "secondary", "folder-plus")
+        new_pl.setToolTip("저장 폴더 아래에 재생목록 폴더를 만듭니다. 파일은 우클릭 → 재생목록으로 이동")
+        new_pl.clicked.connect(self._new_playlist)
+        hl.addWidget(new_pl)
         play_all = Button("전체 재생", "primary", "play")
         play_all.clicked.connect(self._play_visible)
         hl.addWidget(play_all)
@@ -210,6 +219,13 @@ class LibraryScreen(Screen):
             self._chips.append((chip, kind))
             sl.addWidget(chip)
         self.add_section(search)
+
+        # ---------------------------------------------------------- playlists (sub-folders)
+        self._folder: str | None = None  # None = everything, "" = files directly in the save folder
+        self.folder_row = QWidget()
+        self.folder_box = hbox(self.folder_row, gap=8)
+        self.folder_row.hide()
+        self.add_section(self.folder_row)
 
         # ---------------------------------------------------------- grid
         self.host = QWidget()
@@ -261,6 +277,7 @@ class LibraryScreen(Screen):
             count = sum(1 for f in pl.files if _matches(f, kind)) + (len(pl.orphan_subtitles) if kind in ("all", "subs") else 0)
             chip._badge.setText(str(count))
         self.strip_note.setText(f"마지막 스캔 {self._scanned_at:%H:%M:%S} · 하위 폴더 포함 · ffprobe로 길이/해상도 읽음")
+        self._render_folder_chips()
         self._render()
 
     def _set(self, w: QWidget) -> None:
@@ -280,8 +297,52 @@ class LibraryScreen(Screen):
     def _visible_files(self) -> list[LocalFile]:
         if self.playlist is None:
             return []
-        files = [f for f in self.playlist.files if _matches(f, self._kind) and (not self._query or self._query in f.name.casefold())]
+        files = [
+            f for f in self.playlist.files
+            if _matches(f, self._kind) and (not self._query or self._query in f.name.casefold())
+            and (self._folder is None or self._top_folder(f) == self._folder)
+        ]
         return sorted(files, key=lambda f: -f.modified.timestamp())
+
+    def _top_folder(self, f: LocalFile) -> str:
+        return f.subfolder(self.playlist.folder).split("/")[0] if self.playlist else ""
+
+    def _render_folder_chips(self) -> None:
+        while self.folder_box.count():
+            item = self.folder_box.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        folders = sorted({self._top_folder(f) for f in self.playlist.files} if self.playlist else set(), key=str.casefold)
+        on_disk = [p.name for p in collections.playlists()]
+        names = list(dict.fromkeys([*folders, *on_disk]))
+        if self._folder is not None and self._folder not in names:
+            self._folder = None
+        if not names or names == [""]:
+            self.folder_row.hide()
+            return
+        self.folder_box.addWidget(IconLabel("playlist", C.TEXT2, 16))
+        self.folder_box.addWidget(label("재생목록", "secondary"))
+        counts = {n: sum(1 for f in self.playlist.files if self._top_folder(f) == n) for n in names}
+        for text, key in [("전체", None), *[("(루트)" if n == "" else n, n) for n in names]]:
+            chip = Chip(text, str(sum(counts.values()) if key is None else counts.get(key, 0)), "folder" if key else None, key == self._folder)
+            chip.clicked.connect(lambda k=key: self._set_folder(k))
+            self.folder_box.addWidget(chip)
+        self.folder_box.addStretch()
+        self.folder_row.show()
+
+    def _set_folder(self, key: str | None) -> None:
+        self._folder = key
+        self._render_folder_chips()
+        self._render()
+
+    def _new_playlist(self) -> None:
+        name = dialogs.prompt(self, "새 재생목록", "저장 폴더 아래에 같은 이름의 폴더가 만들어집니다. 파일은 카드를 우클릭해서 옮길 수 있습니다.", placeholder="재생목록 이름")
+        if not name:
+            return
+        try:
+            collections.create(name)
+        except (ValueError, OSError) as exc:
+            dialogs.confirm(self, "재생목록을 만들지 못했습니다", str(exc), ok_text="닫기")
 
     def _play_visible(self) -> None:
         files = self._visible_files()

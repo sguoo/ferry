@@ -8,7 +8,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QFileDialog, QFrame, QLineEdit, QWidget
 
-from .. import context, fonts, local, workers, youtube
+from .. import collections, context, fonts, local, workers, youtube
+from ..widgets import dialogs, media_menu
 from ..icons import icon
 from ..jobs import STATUS_LABEL, Job
 from ..local import LocalFile, LocalPlaylist
@@ -139,6 +140,16 @@ class ItemRow(QWidget):
             self.status.setText("준비 완료" if on else ("이미 받음" if self.owned else "제외됨"))
             set_prop(self.status, "badge", "success" if on else "neutral")
 
+    def contextMenuEvent(self, event):
+        if not self.owned:
+            return
+        screen = self.parent()
+        while screen is not None and not isinstance(screen, PlaylistScreen):
+            screen = screen.parent()
+        files = screen._owned_files.get(self.entry.id, []) if screen else []
+        if files:
+            media_menu.show(self, files, event.globalPos())
+
     def set_owned(self, owned: bool, exclude: bool) -> None:
         """Mark the entry as already downloaded; with `exclude` it is unchecked and locked out of selection."""
         self.owned = owned
@@ -246,6 +257,14 @@ class LocalRow(QWidget):
     def set_index(self, i: int) -> None:
         self.idx.setText(f"{i:02d}")
 
+    def contextMenuEvent(self, event):
+        screen = self.parent()
+        while screen is not None and not isinstance(screen, PlaylistScreen):
+            screen = screen.parent()
+        rows = [r for r in screen.local_rows if r.checked] if screen else []
+        targets = rows if (self in rows and len(rows) > 1) else [self]
+        media_menu.show(self, [r.file.path for r in targets], event.globalPos())
+
     def _on_toggled(self, on: bool) -> None:
         self.title.text_color = C.TEXT if on else C.TEXT3
         self.title.update()
@@ -296,6 +315,7 @@ class PlaylistScreen(Screen):
         super().__init__(parent)
         self._retry_after_settings = None
         context.bus.settings_changed.connect(self._on_settings_saved)
+        context.bus.library_changed.connect(self._on_library_changed)
         self.playlist: PlaylistInfo | None = None
         self.local: LocalPlaylist | None = None
         self.rows: list[ItemRow] = []
@@ -408,6 +428,13 @@ class PlaylistScreen(Screen):
             banner.findChild(Button).clicked.connect(retry)
             self._retry_after_settings = None
         self._set(banner)
+
+    def _on_library_changed(self) -> None:
+        """Files were moved/deleted (context menu) or a download finished: refresh what is on screen."""
+        if self.local is not None and self.isVisible() and getattr(self, "local_rows", None) is not None and alive(self.local_sel):
+            self._scan(self.local.folder)
+        elif self.playlist is not None and getattr(self, "rows", None) and alive(self.owned_badge):
+            self._scan_owned()
 
     def _on_settings_saved(self) -> None:
         retry = getattr(self, "_retry_after_settings", None)
@@ -585,12 +612,17 @@ class PlaylistScreen(Screen):
         self._set(w)
         self._refresh_selection()
         self._owned_ids: set[str] = set()
-        workers.call(local.owned_video_ids, context.settings.save_dir, finished=self._on_owned_ids, failed=lambda _e: None)
+        self._owned_files: dict[str, list[Path]] = {}
+        self._scan_owned()
 
-    def _on_owned_ids(self, ids: set[str]) -> None:
+    def _scan_owned(self) -> None:
+        workers.call(local.owned_video_files, context.settings.save_dir, finished=self._on_owned_files, failed=lambda _e: None)
+
+    def _on_owned_files(self, files: dict[str, list[Path]]) -> None:
         if not alive(self.owned_badge):
             return
-        self._owned_ids = ids
+        self._owned_files = files
+        self._owned_ids = set(files)
         self._apply_owned()
 
     def _apply_owned(self) -> None:
@@ -795,6 +827,10 @@ class PlaylistScreen(Screen):
         rescan = Button("폴더 다시 읽기", "secondary", "refresh", "sm")
         rescan.clicked.connect(lambda: self._scan(pl.folder))
         order.addWidget(rescan)
+        new_pl = Button("새 재생목록", "secondary", "folder-plus", "sm")
+        new_pl.setToolTip("이 폴더 아래에 재생목록 폴더를 만듭니다. 파일은 우클릭 → 재생목록으로 이동")
+        new_pl.clicked.connect(self._new_playlist)
+        order.addWidget(new_pl)
         open_btn = Button("탐색기에서 열기", "ghost", "external", "sm")
         open_btn.clicked.connect(lambda: local.open_in_explorer(pl.folder))
         order.addWidget(open_btn)
@@ -877,6 +913,17 @@ class PlaylistScreen(Screen):
                 n += 1
                 row.set_index(n)
                 self.local_box.addWidget(row)
+
+    def _new_playlist(self) -> None:
+        name = dialogs.prompt(self, "새 재생목록", f"{self.local.folder} 아래에 같은 이름의 폴더가 만들어집니다.", placeholder="재생목록 이름")
+        if not name:
+            return
+        try:
+            (self.local.folder / collections._BAD_NAME.sub("", name).strip(" .")).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            dialogs.confirm(self, "재생목록을 만들지 못했습니다", str(exc), ok_text="닫기")
+            return
+        self._scan(self.local.folder)
 
     def _play_local(self, start: LocalRow | None = None, rows: list[LocalRow] | None = None, shuffle: bool = False) -> None:
         """Play the checked files (of `rows`, default the whole table) in table order, or in a random order with

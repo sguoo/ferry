@@ -4,7 +4,7 @@
     overlay.play(["https://...googlevideo.com/..."], titles=["Preview"])
 
 Keys: Space play/pause · ←/→ seek 5s · ↑/↓ volume · M mute · N/P next/prev · R repeat · X shuffle · S subtitles
-      · F fullscreen · Esc close
+      · F fullscreen · Esc leaves fullscreen, otherwise drops to the mini bar
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QPainter, QTextBlockFormat, QTextCursor, QTextDocument, QTextOption
-from PySide6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
+from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaMetaData, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
-from PySide6.QtWidgets import QComboBox, QFrame, QGraphicsScene, QGraphicsView, QGridLayout, QSlider, QStackedWidget, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QGraphicsScene, QGraphicsView, QGridLayout, QSlider, QStackedWidget, QWidget
 
 from .. import context, fonts, subtitles
 from ..icons import icon
@@ -206,6 +206,13 @@ class PlayerOverlay(QWidget):
         self.audio = QAudioOutput(self)
         self.audio.setVolume(0.8)
         self.player.setAudioOutput(self.audio)
+        # follow the system default output: Qt keeps the device it opened with, so a headset plugged in or a
+        # new default picked in Windows sound settings would otherwise leave the audio on the old device
+        self.devices = QMediaDevices(self)
+        self.devices.audioOutputsChanged.connect(self._follow_default_output)
+        self.device_timer = QTimer(self)  # a default change with no plug/unplug fires no signal; poll for it
+        self.device_timer.setInterval(2000)
+        self.device_timer.timeout.connect(self._follow_default_output)
         # QVideoWidget is a native window that would sit above any overlay, so the
         # frames go through a QGraphicsVideoItem inside a plain QGraphicsView instead
         self.scene = QGraphicsScene(self)
@@ -230,7 +237,7 @@ class PlayerOverlay(QWidget):
         root = vbox(self, gap=0)
 
         # ---- top bar
-        top = QFrame()
+        top = self.top = QFrame()
         top.setStyleSheet(f"background: {C.BG1}; border-bottom: 1px solid {C.BORDER};")
         tl = hbox(top, gap=12, margins=(20, 12, 12, 12))
         tl.addWidget(IconLabel("play", C.ACCENT, 18))
@@ -240,7 +247,7 @@ class PlayerOverlay(QWidget):
         tl.addWidget(self.pos_badge)
         self.kind_badge = Badge("", "success", mono=True)
         tl.addWidget(self.kind_badge)
-        close_btn = IconButton("x", "닫기 (Esc)", flat=True)
+        close_btn = IconButton("x", "재생 종료", flat=True)
         close_btn.clicked.connect(self.close)
         tl.addWidget(close_btn)
         root.addWidget(top)
@@ -286,7 +293,7 @@ class PlayerOverlay(QWidget):
         root.addWidget(self.error)
 
         # ---- controls
-        bar = QFrame()
+        bar = self.bar = QFrame()
         bar.setStyleSheet(f"background: {C.BG1}; border-top: 1px solid {C.BORDER};")
         bl = vbox(bar, gap=8, margins=(20, 12, 20, 14))
         seek_row = hbox(gap=12)
@@ -357,8 +364,15 @@ class PlayerOverlay(QWidget):
         bl.addLayout(ctl)
         root.addWidget(bar)
 
-        self.hint = label("Space 재생/정지 · ←→ 5초 · ↑↓ 음량 · M 음소거 · N/P 다음/이전 · R 반복 · X 셔플 · S 자막 · F 전체 화면 · Esc 닫기", "muted", align=Qt.AlignmentFlag.AlignCenter)
+        self.hint = label("Space 재생/정지 · ←→ 5초 · ↑↓ 음량 · M 음소거 · N/P 다음/이전 · R 반복 · X 셔플 · S 자막 · F 전체 화면 · Esc 전체 화면 해제 / 미니 플레이어로", "muted", align=Qt.AlignmentFlag.AlignCenter)
         bl.addWidget(self.hint)
+
+        # fullscreen: the bars and the cursor fade out after 3s without mouse movement
+        self.idle_timer = QTimer(self)
+        self.idle_timer.setInterval(3000)
+        self.idle_timer.setSingleShot(True)
+        self.idle_timer.timeout.connect(self._hide_chrome)
+        self._chrome_hidden = False
 
     # ------------------------------------------------------------------ api
     def play(self, items: list, index: int = 0, titles: list[str] | None = None) -> None:
@@ -645,7 +659,35 @@ class PlayerOverlay(QWidget):
     def toggle_fullscreen(self) -> None:
         self._fullscreen = not self._fullscreen
         self.fs_btn.setIcon(icon("minus" if self._fullscreen else "square", C.TEXT2, 16))
+        self.fs_btn.setToolTip("전체 화면 해제 (F / Esc)" if self._fullscreen else "전체 화면 (F)")
+        app = QApplication.instance()
+        if self._fullscreen:
+            app.installEventFilter(self)  # mouse moves anywhere over the player count as activity
+            self.idle_timer.start()
+        else:
+            app.removeEventFilter(self)
+            self.idle_timer.stop()
+            self._show_chrome()
         self.fullscreen_toggled.emit(self._fullscreen)
+
+    def _hide_chrome(self) -> None:
+        if not self._fullscreen or self._chrome_hidden:
+            return
+        self._chrome_hidden = True
+        self.top.hide()
+        self.bar.hide()
+        self.setCursor(Qt.CursorShape.BlankCursor)
+        self.video.viewport().setCursor(Qt.CursorShape.BlankCursor)
+
+    def _show_chrome(self) -> None:
+        if self._chrome_hidden:
+            self._chrome_hidden = False
+            self.top.show()
+            self.bar.show()
+            self.unsetCursor()
+            self.video.viewport().unsetCursor()
+        if self._fullscreen:
+            self.idle_timer.start()  # (re)arm: another 3 quiet seconds hide it again
 
     # --------------------------------------------------------------- slots
     def _on_position(self, ms: int) -> None:
@@ -662,6 +704,15 @@ class PlayerOverlay(QWidget):
         playing = state == QMediaPlayer.PlaybackState.PlayingState
         self.play_btn.setIcon(icon("pause" if playing else "play", C.TEXT, 20))
         self._sync_caption_timer()
+        if playing:
+            self.device_timer.start()
+        else:
+            self.device_timer.stop()
+
+    def _follow_default_output(self) -> None:
+        default = QMediaDevices.defaultAudioOutput()
+        if not default.isNull() and default.id() != self.audio.device().id():
+            self.audio.setDevice(default)
 
     def _on_status(self, status) -> None:
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia) and self._pending_seek is not None:
@@ -693,7 +744,10 @@ class PlayerOverlay(QWidget):
         if k == Qt.Key.Key_Space:
             self.toggle()
         elif k == Qt.Key.Key_Escape:
-            self.close()
+            if self._fullscreen:
+                self.toggle_fullscreen()
+            else:
+                self.minimize()
         elif k == Qt.Key.Key_Left:
             self.seek_by(-SEEK_STEP_MS)
         elif k == Qt.Key.Key_Right:
@@ -723,6 +777,8 @@ class PlayerOverlay(QWidget):
         self.toggle_fullscreen()
 
     def eventFilter(self, obj, event):
+        if self._fullscreen and event.type() in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress, QEvent.Type.Wheel, QEvent.Type.KeyPress):
+            self._show_chrome()
         if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible():
             self.setGeometry(self.parentWidget().rect())
         elif obj is self.video and event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
